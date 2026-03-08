@@ -17,27 +17,60 @@ const DISTRICTS = {
 };
 
 const STATES = {
-  "Madhya Pradesh": { code: "MP", region: "Central", lifeExp: 65.7, cvdMort: 195, urbanPct: 0.28, htPrev: 0.22 },
-  "Kerala": { code: "KL", region: "South", lifeExp: 75.1, cvdMort: 245, urbanPct: 0.48, htPrev: 0.33 },
-  "Bihar": { code: "BR", region: "East", lifeExp: 62.3, cvdMort: 172, urbanPct: 0.12, htPrev: 0.19 },
-  "Maharashtra": { code: "MH", region: "West", lifeExp: 72.2, cvdMort: 220, urbanPct: 0.45, htPrev: 0.27 },
-  "Tamil Nadu": { code: "TN", region: "South", lifeExp: 72.6, cvdMort: 238, urbanPct: 0.49, htPrev: 0.30 },
+  "Madhya Pradesh": { code: "MP", region: "Central", lifeExp: 66.7, cvdMort: 195, urbanPct: 0.28, htPrev: 0.22 },
+  "Kerala": { code: "KL", region: "South", lifeExp: 78.4, cvdMort: 245, urbanPct: 0.48, htPrev: 0.33 },
+  "Bihar": { code: "BR", region: "East", lifeExp: 64.4, cvdMort: 172, urbanPct: 0.12, htPrev: 0.19 },
+  "Maharashtra": { code: "MH", region: "West", lifeExp: 73.1, cvdMort: 220, urbanPct: 0.45, htPrev: 0.27 },
+  "Tamil Nadu": { code: "TN", region: "South", lifeExp: 73.8, cvdMort: 238, urbanPct: 0.49, htPrev: 0.30 },
 };
 
 const WEALTH_QUINTILES = ["Poorest (Q1)", "Poorer (Q2)", "Middle (Q3)", "Richer (Q4)", "Richest (Q5)"];
 
 const NFHS_PARAMS = {
-  hypertension_prev: [0.18, 0.20, 0.23, 0.26, 0.30],
-  treatment_access:  [0.12, 0.18, 0.28, 0.42, 0.58],
-  diabetes_prev:     [0.068, 0.085, 0.112, 0.148, 0.189],
-  tobacco_use:       [0.38, 0.32, 0.27, 0.22, 0.15],
-  obesity_prev:      [0.12, 0.18, 0.24, 0.30, 0.36],
-  mean_sbp:          [124, 126, 128, 131, 134],
-  mean_chol:         [185, 190, 196, 202, 210],
-  mean_bmi:          [21.5, 22.8, 24.2, 25.8, 27.1],
-  mean_gfr:          [95, 92, 88, 85, 82],
-  oop_spending_pct:  [0.826, 0.795, 0.752, 0.716, 0.688],
-  cost_multiplier:   [0.6, 0.75, 1.0, 1.3, 1.8],
+  // Hypertension prevalence by wealth quintile (NFHS-5, 2019-21)
+  // Men 24.1%, Women 21.2% overall; gradient: lowest to highest quintile
+  // Source: NFHS-5 factsheet + IJPH 2023
+  hypertension_prev: [0.17, 0.20, 0.23, 0.26, 0.29],
+
+  // Treatment access (% on BP medication among hypertensives)
+  // Source: NFHS-5; Poorest 17.3% aware → Richest 41.8% aware; treatment lower
+  treatment_access:  [0.10, 0.16, 0.25, 0.38, 0.45],
+
+  // Diabetes prevalence (NFHS-5, age 15-49)
+  // Overall 4.9%; Richest 32% higher than poorest
+  // Source: Nature Scientific Reports 2023
+  diabetes_prev:     [0.042, 0.058, 0.078, 0.102, 0.116],
+
+  // Tobacco use by wealth quintile (NFHS-5)
+  // Poorest highest, richest lowest; ST men 53.4%
+  // Source: PMC 2023
+  tobacco_use:       [0.38, 0.33, 0.27, 0.21, 0.14],
+
+  // Obesity prevalence (BMI≥30) by wealth (NFHS-5)
+  // Women: Q1 1.6% → Q5 12.6%; Men: Q1 1.2% → Q5 8%
+  // Source: ScienceDirect 2023
+  obesity_prev:      [0.014, 0.035, 0.065, 0.095, 0.103],
+
+  // Mean SBP — derived from NFHS-5 BP measurement data
+  mean_sbp:          [123, 125, 128, 131, 133],
+
+  // Mean total cholesterol — approximate from Indian studies
+  mean_chol:         [182, 188, 195, 202, 210],
+
+  // Mean BMI by wealth (NFHS-5)
+  // Source: ScienceDirect 2023
+  mean_bmi:          [20.8, 22.1, 23.5, 25.0, 26.4],
+
+  // Mean eGFR — approximated; lower in richer (more diabetes/hypertension)
+  mean_gfr:          [96, 93, 89, 86, 83],
+
+  // OOP spending as fraction of health cost by quintile
+  // Source: NSSO 75th Round; PMC 2024
+  oop_spending_pct:  [0.83, 0.80, 0.75, 0.70, 0.65],
+
+  // Cost multiplier relative to middle quintile
+  // Private healthcare more used by richer; NSSO 75th Round
+  cost_multiplier:   [0.55, 0.70, 1.0, 1.35, 1.90],
 };
 
 // --- INTERVENTIONS LIBRARY ---
@@ -47,50 +80,59 @@ const INTERVENTIONS = {
     description: "Current practice baseline",
     drugs: [], testsPerYear: 0, visitsPerYear: 0, needsPhysician: false, needsColdChain: false, needsLab: false, needsSmartphone: false },
 
-  ihci: { name: "IHCI Protocol", type: "ihci", category: "CVD Treatment", coverage: 60, efficacy: 25, adherence: 55, costPerPerson: 4200, targetRisk: "all", targetHypertensive: true, targetDiabetic: false, targetAge: [30, 69], targetSex: "All",
+  ihci: { name: "IHCI Protocol", type: "ihci", category: "CVD Treatment", coverage: 58, efficacy: 20, adherence: 41, costPerPerson: 2400, targetRisk: "all", targetHypertensive: true, targetDiabetic: false, targetAge: [30, 69], targetSex: "All",
     description: "Treat all detected hypertensives per IHCI protocol — amlodipine + telmisartan",
-    drugs: [{name: "Amlodipine 5mg", dailyDose: 1, unitCost: 1.5, monthly: 45}, {name: "Telmisartan 40mg", dailyDose: 1, unitCost: 3.2, monthly: 96}],
-    testsPerYear: 2, visitsPerYear: 4, needsPhysician: false, needsColdChain: false, needsLab: true, needsSmartphone: false },
+    drugs: [{name: "Amlodipine 5mg", dailyDose: 1, unitCost: 1.2, monthly: 36}, {name: "Telmisartan 40mg", dailyDose: 1, unitCost: 2.5, monthly: 75}],
+    testsPerYear: 2, visitsPerYear: 4, needsPhysician: false, needsColdChain: false, needsLab: true, needsSmartphone: false,
+    evidence: "SBP reduction: 15-16 mmHg (IHCI Punjab/Maharashtra, PMC 2022). CVD RRR: 20% per 10mmHg (Lancet meta-analysis, 2023). Adherence: 39-41% (India, ScienceDirect 2021). BP control: 59.8% at follow-up (Global Heart Journal, 2022). Drug cost: ₹480-800/yr generic (Nature, 2023)." },
 
-  whoBestBuy: { name: "WHO Best Buy (≥20% risk)", type: "whoBestBuy", category: "CVD Treatment", coverage: 50, efficacy: 35, adherence: 60, costPerPerson: 6800, targetRisk: "high", targetHypertensive: false, targetDiabetic: false, targetAge: [40, 69], targetSex: "All",
+  whoBestBuy: { name: "WHO Best Buy (≥20% risk)", type: "whoBestBuy", category: "CVD Treatment", coverage: 50, efficacy: 30, adherence: 42, costPerPerson: 5500, targetRisk: "high", targetHypertensive: false, targetDiabetic: false, targetAge: [40, 69], targetSex: "All",
     description: "Multi-drug therapy for individuals with ≥20% 10-year CVD risk — aspirin + statin + antihypertensive",
-    drugs: [{name: "Aspirin 75mg", dailyDose: 1, unitCost: 0.5, monthly: 15}, {name: "Atorvastatin 10mg", dailyDose: 1, unitCost: 2.8, monthly: 84}, {name: "Amlodipine 5mg", dailyDose: 1, unitCost: 1.5, monthly: 45}],
-    testsPerYear: 2, visitsPerYear: 4, needsPhysician: true, needsColdChain: false, needsLab: true, needsSmartphone: false },
+    drugs: [{name: "Aspirin 75mg", dailyDose: 1, unitCost: 0.5, monthly: 15}, {name: "Atorvastatin 20mg", dailyDose: 1, unitCost: 5.15, monthly: 155}, {name: "Amlodipine 5mg", dailyDose: 1, unitCost: 1.2, monthly: 36}],
+    testsPerYear: 2, visitsPerYear: 4, needsPhysician: true, needsColdChain: false, needsLab: true, needsSmartphone: false,
+    evidence: "Statin RRR: 20% per mmol/L LDL (CTT Collaboration, Lancet 2014). BP RRR: 20% per 10mmHg. Atorvastatin 20mg: ₹5.15/tab regulated (IJBCP 2021). Adherence: 42.3% (PMC 2021). Asian Indians: 1.68× higher statin plasma levels (PMC 2015)." },
 
-  statinLower: { name: "Lower Statin Threshold (≥10%)", type: "statinLower", category: "CVD Treatment", coverage: 45, efficacy: 30, adherence: 50, costPerPerson: 5400, targetRisk: "medium", targetHypertensive: false, targetDiabetic: false, targetAge: [35, 69], targetSex: "All",
+  statinLower: { name: "Lower Statin Threshold (≥10%)", type: "statinLower", category: "CVD Treatment", coverage: 45, efficacy: 25, adherence: 42, costPerPerson: 4200, targetRisk: "medium", targetHypertensive: false, targetDiabetic: false, targetAge: [35, 69], targetSex: "All",
     description: "Initiate statins at ≥10% CVD risk instead of ≥20% — wider net, moderate intensity",
-    drugs: [{name: "Atorvastatin 10mg", dailyDose: 1, unitCost: 2.8, monthly: 84}, {name: "Amlodipine 5mg", dailyDose: 1, unitCost: 1.5, monthly: 45}],
-    testsPerYear: 2, visitsPerYear: 3, needsPhysician: true, needsColdChain: false, needsLab: true, needsSmartphone: false },
+    drugs: [{name: "Atorvastatin 10mg", dailyDose: 1, unitCost: 2.8, monthly: 84}, {name: "Amlodipine 5mg", dailyDose: 1, unitCost: 1.2, monthly: 36}],
+    testsPerYear: 2, visitsPerYear: 3, needsPhysician: true, needsColdChain: false, needsLab: true, needsSmartphone: false,
+    evidence: "Statin benefit in low-risk: 11 vascular events prevented per 1000/5yr per mmol/L LDL (CTT 2012). Atorvastatin cost: ₹5.15/tab (IJBCP 2021). Primary prevention adherence lower than secondary (PMC 2021)." },
 
-  polypill: { name: "Polypill (Secondary Prevention)", type: "polypill", category: "CVD Treatment", coverage: 55, efficacy: 38, adherence: 70, costPerPerson: 3600, targetRisk: "high", targetHypertensive: false, targetDiabetic: false, targetAge: [40, 75], targetSex: "All",
+  polypill: { name: "Polypill (Secondary Prevention)", type: "polypill", category: "CVD Treatment", coverage: 55, efficacy: 33, adherence: 70, costPerPerson: 7200, targetRisk: "high", targetHypertensive: false, targetDiabetic: false, targetAge: [40, 75], targetSex: "All",
     description: "Fixed-dose combination (aspirin + statin + BP lowering) for secondary CVD prevention — WHO-endorsed, single pill improves adherence",
-    drugs: [{name: "Polypill FDC", dailyDose: 1, unitCost: 8.0, monthly: 240}],
-    testsPerYear: 1, visitsPerYear: 2, needsPhysician: false, needsColdChain: false, needsLab: true, needsSmartphone: false },
+    drugs: [{name: "Polycap FDC (ASA+simva+atenolol+ramipril+HCTZ)", dailyDose: 1, unitCost: 20, monthly: 600}],
+    testsPerYear: 1, visitsPerYear: 2, needsPhysician: false, needsColdChain: false, needsLab: true, needsSmartphone: false,
+    evidence: "TIPS-3: 33% CVD reduction (primary prevention). PolyIran: 62% fatal stroke reduction. SBP: -7.4mmHg, LDL: -0.70mmol/L (Polycap, Lancet 2009). Manufacturing: $0.05/pill; India market: ~₹20/day. Adherence superior to separate pills (EHJ-QCCO 2022)." },
 
-  sglt2: { name: "SGLT2i for Diabetics", type: "sglt2", category: "Diabetes Treatment", coverage: 35, efficacy: 28, adherence: 45, costPerPerson: 32000, targetRisk: "all", targetHypertensive: false, targetDiabetic: true, targetAge: [30, 69], targetSex: "All",
+  sglt2: { name: "SGLT2i for Diabetics", type: "sglt2", category: "Diabetes Treatment", coverage: 35, efficacy: 38, adherence: 45, costPerPerson: 28000, targetRisk: "all", targetHypertensive: false, targetDiabetic: true, targetAge: [30, 69], targetSex: "All",
     description: "Add SGLT2 inhibitor (dapagliflozin) to metformin for cardio-renal protection",
-    drugs: [{name: "Metformin 500mg", dailyDose: 2, unitCost: 1.2, monthly: 72}, {name: "Dapagliflozin 10mg", dailyDose: 1, unitCost: 22, monthly: 660}],
-    testsPerYear: 4, visitsPerYear: 4, needsPhysician: true, needsColdChain: false, needsLab: true, needsSmartphone: false },
+    drugs: [{name: "Metformin 500mg", dailyDose: 2, unitCost: 1.2, monthly: 72}, {name: "Dapagliflozin 10mg", dailyDose: 1, unitCost: 55, monthly: 1650}],
+    testsPerYear: 4, visitsPerYear: 4, needsPhysician: true, needsColdChain: false, needsLab: true, needsSmartphone: false,
+    evidence: "EMPA-REG: 38% CV mortality reduction (HR 0.62, NEJM 2015). DAPA-CKD: 39% renal outcome reduction (HR 0.61, NEJM 2020). HbA1c: -0.6-0.8%. NNT 38 for all-cause mortality. Prescribing: only 3-8% eligible patients in India (Kidney Reports 2022)." },
 
-  mhealth: { name: "mHealth Adherence Support", type: "mhealth", category: "Digital Health", coverage: 40, efficacy: 15, adherence: 72, costPerPerson: 1200, targetRisk: "all", targetHypertensive: true, targetDiabetic: false, targetAge: [30, 69], targetSex: "All",
+  mhealth: { name: "mHealth Adherence Support", type: "mhealth", category: "Digital Health", coverage: 40, efficacy: 12, adherence: 72, costPerPerson: 800, targetRisk: "all", targetHypertensive: true, targetDiabetic: false, targetAge: [30, 69], targetSex: "All",
     description: "SMS/WhatsApp reminders + teleconsultation for treatment adherence",
     drugs: [],
-    testsPerYear: 0, visitsPerYear: 1, needsPhysician: false, needsColdChain: false, needsLab: false, needsSmartphone: true },
+    testsPerYear: 0, visitsPerYear: 1, needsPhysician: false, needsColdChain: false, needsLab: false, needsSmartphone: true,
+    evidence: "SMS interventions improve BP control and adherence (MDPI 2023). Cost: INR 79-110/patient/yr for SMS (PubMed 2014). Scalable in low-resource settings. Effect sizes modest but population-level impact significant." },
 
-  saltReduction: { name: "Population Salt Reduction", type: "saltReduction", category: "Population Policy", coverage: 70, efficacy: 12, adherence: 80, costPerPerson: 180, targetRisk: "all", targetHypertensive: false, targetDiabetic: false, targetAge: [18, 80], targetSex: "All",
+  saltReduction: { name: "Population Salt Reduction", type: "saltReduction", category: "Population Policy", coverage: 70, efficacy: 10, adherence: 80, costPerPerson: 150, targetRisk: "all", targetHypertensive: false, targetDiabetic: false, targetAge: [18, 80], targetSex: "All",
     description: "Food industry reformulation + labelling + media campaign targeting 30% salt reduction",
     drugs: [],
-    testsPerYear: 0, visitsPerYear: 0, needsPhysician: false, needsColdChain: false, needsLab: false, needsSmartphone: false },
+    testsPerYear: 0, visitsPerYear: 0, needsPhysician: false, needsColdChain: false, needsLab: false, needsSmartphone: false,
+    evidence: "Current Indian intake: 10.98 g/day (JAHA 2017). Target: 30% reduction. SBP reduction: 4-6 mmHg per 3g (Hypertension 2022). CVD mortality: 9-13% stroke reduction over 30yr (PubMed 2012). WHO Best Buy: most cost-effective population intervention." },
 
-  chwLed: { name: "CHW-Led HT Management at HWC", type: "chwLed", category: "Service Delivery", coverage: 65, efficacy: 22, adherence: 60, costPerPerson: 2800, targetRisk: "all", targetHypertensive: true, targetDiabetic: false, targetAge: [30, 69], targetSex: "All",
+  chwLed: { name: "CHW-Led HT Management at HWC", type: "chwLed", category: "Service Delivery", coverage: 65, efficacy: 18, adherence: 70, costPerPerson: 2200, targetRisk: "all", targetHypertensive: true, targetDiabetic: false, targetAge: [30, 69], targetSex: "All",
     description: "ASHA/CHW-led BP measurement, protocol-based treatment initiation at HWC",
-    drugs: [{name: "Amlodipine 5mg", dailyDose: 1, unitCost: 1.5, monthly: 45}],
-    testsPerYear: 1, visitsPerYear: 6, needsPhysician: false, needsColdChain: false, needsLab: false, needsSmartphone: false },
+    drugs: [{name: "Amlodipine 5mg", dailyDose: 1, unitCost: 1.2, monthly: 36}],
+    testsPerYear: 1, visitsPerYear: 6, needsPhysician: false, needsColdChain: false, needsLab: false, needsSmartphone: false,
+    evidence: "CHW BP reduction: 5.0/2.1 mmHg vs control (PMC 2023). Medication adherence: 70.3% (PMC 2023). IHCI HWC performance: BP control 26%→58% (2019-2022), missed visits 61%→26% (BMC 2024). 38,000 ASHAs trained in Chhattisgarh (PMC 2024)." },
 
-  tobaccoTax: { name: "Tobacco Tax +50%", type: "tobaccoTax", category: "Population Policy", coverage: 85, efficacy: 18, adherence: 90, costPerPerson: 0, targetRisk: "all", targetHypertensive: false, targetDiabetic: false, targetAge: [18, 80], targetSex: "All",
+  tobaccoTax: { name: "Tobacco Tax +50%", type: "tobaccoTax", category: "Population Policy", coverage: 85, efficacy: 15, adherence: 90, costPerPerson: 0, targetRisk: "all", targetHypertensive: false, targetDiabetic: false, targetAge: [18, 80], targetSex: "All",
     description: "50% increase in effective tobacco tax — pro-poor health gain but regressive financial burden",
     drugs: [],
-    testsPerYear: 0, visitsPerYear: 0, needsPhysician: false, needsColdChain: false, needsLab: false, needsSmartphone: false },
+    testsPerYear: 0, visitsPerYear: 0, needsPhysician: false, needsColdChain: false, needsLab: false, needsSmartphone: false,
+    evidence: "Price elasticity: cigarettes -0.44, bidis ~-1.0 (PMC 2009). Poorest 20% most responsive. 10% VAT increase → 6.5% dual-use decrease (PMC 2018). Annual tobacco deaths India: ~1 million (WHO). CVD risk benefit begins within months of cessation. WHO #1 Best Buy." },
 };
 
 const INTERVENTION_CATEGORIES = ["CVD Treatment", "Diabetes Treatment", "Digital Health", "Population Policy", "Service Delivery"];
@@ -253,7 +295,8 @@ function simulateCohort(population, intervention, years, rng) {
         p.eventYear = year;
         events++;
         eventsByWealth[p.wealthQ]++;
-        const eCost = p.eventType === "MI" ? 180000 : p.eventType === "Stroke" ? 150000 : 120000;
+        // Updated event costs (PMJAY rates 2024): MI ₹2.5L, Stroke ₹1.8L, HF ₹1.2L
+        const eCost = p.eventType === "MI" ? 250000 : p.eventType === "Stroke" ? 180000 : 120000;
         const totalEventCost = eCost * NFHS_PARAMS.cost_multiplier[p.wealthQ];
         const oopShare = NFHS_PARAMS.oop_spending_pct[p.wealthQ];
         const pmjayShare = rng() < 0.4 ? 0.6 : 0;
@@ -271,16 +314,18 @@ function simulateCohort(population, intervention, years, rng) {
 
       if (p.alive) {
         let qaly = 1.0;
-        if (p.hadEvent) qaly -= (p.eventType === "Stroke" ? 0.25 : 0.15);
-        if (p.diabetic) qaly -= 0.05;
-        if (p.hasRetinopathy) qaly -= 0.05;
-        if (p.hasNeuropathy) qaly -= 0.03;
-        if (p.hasNephropathy || p.ckdStage >= 3) qaly -= 0.06;
-        if (p.hypertensive && !p.onTreatment) qaly -= 0.02;
+        if (p.hadEvent) qaly -= (p.eventType === "Stroke" ? 0.32 : 0.15); // GBD stroke 0.316
+        if (p.diabetic) qaly -= 0.04;
+        if (p.hasRetinopathy) qaly -= 0.06;
+        if (p.hasNeuropathy) qaly -= 0.04;
+        if (p.hasNephropathy || p.ckdStage >= 3) qaly -= 0.07;
+        if (p.onDialysis) qaly -= 0.21; // GBD ESRD on dialysis
+        if (p.hypertensive && !p.onTreatment) qaly -= 0.03;
         p.qaly += qaly; totalQaly += qaly; qalyByWealth[p.wealthQ] += qaly;
       }
 
-      const annCost = (p.onTreatment ? 3600 : 0) + (p.hadEvent && p.alive ? 24000 : 0) + additionalCost + (p.onDialysis ? 60000 : 0);
+      // Updated annual treatment cost: ₹2400 for those on treatment; post-event ₹18000; dialysis ₹316000/yr
+      const annCost = (p.onTreatment ? 2400 : 0) + (p.hadEvent && p.alive ? 18000 : 0) + additionalCost + (p.onDialysis ? 316000 : 0);
       p.cost += annCost; totalCost += annCost; costByWealth[p.wealthQ] += annCost;
     }
     treatedCount = treated;
@@ -301,7 +346,8 @@ function computeDCEA(baseRes, intRes, equityWeights) {
     alive: res.results[lastYear].aliveByWealth[q],
   }));
   const base = make(baseRes), int = make(intRes);
-  const wtp = 156000;
+  // WTP threshold: ₹2,34,859 = 1× GDP per capita 2024-25 (HTAIn empirical: 1-1.52× GDP per capita, Value in Health 2025)
+  const wtp = 234859;
 
   const incr = Array(5).fill(null).map((_, q) => {
     const dQ = int[q].totalQaly - base[q].totalQaly;
@@ -514,6 +560,114 @@ function Metric({ label, value, sub, color = "blue" }) {
 function Badge({ text, color }) {
   const cm = { green: "bg-green-100 text-green-800", red: "bg-red-100 text-red-800", yellow: "bg-yellow-100 text-yellow-800", blue: "bg-blue-100 text-blue-800" };
   return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cm[color] || cm.blue}`}>{text}</span>;
+}
+
+// --- TAB: GUIDE/TUTORIAL ---
+
+function GuideTab() {
+  const dataSources = [
+    { source: "NFHS-5 (2019-21)", usedFor: "Hypertension, diabetes, tobacco prevalence; treatment access; wealth quintile distributions" },
+    { source: "Globorisk India", usedFor: "10-year CVD risk prediction; calibrated to Indian population" },
+    { source: "NSSO 75th Round", usedFor: "Out-of-pocket spending patterns; cost multipliers by wealth quintile" },
+    { source: "PMJAY Data (2024)", usedFor: "Event costs (MI ₹2.5L, Stroke ₹1.8L); scheme coverage 40%" },
+    { source: "Lancet meta-analyses", usedFor: "Drug efficacy: BP 20% RRR per 10mmHg, statin 20% per mmol/L LDL" },
+    { source: "GBD 2021", usedFor: "Disease disability weights (QALYs); population-level health burden" },
+    { source: "Indian RCTs (IHCI, STENO-2)", usedFor: "Intervention efficacy, adherence, cost per person with Indian context" },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-base font-bold text-gray-800 mb-2">Welcome to NCD-India Feasibility Prototype</h2>
+        <p className="text-sm text-gray-700 leading-relaxed">
+          This platform demonstrates the architecture and analytical approach of the proposed <strong>NCD-India Integrated Research Platform</strong>. It combines patient-level microsimulation, Distributed Cost-Effectiveness Analysis (DCEA) with equity weighting, disease modules (diabetes, CKD), and comprehensive logistics planning for NCDs in India.
+        </p>
+        <p className="text-sm text-gray-600 mt-2 italic">
+          Current version uses illustrative parameters for demonstration. The funded project will replace all with rigorously derived, validated, peer-reviewed Indian data.
+        </p>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-bold text-gray-800 mb-2">How to Use This Platform</h3>
+        <div className="text-xs text-gray-700 space-y-1.5">
+          <div><strong>1. Population Tab:</strong> View synthetic population characteristics by wealth quintile (NFHS-5 calibrated). See the "double jeopardy" — high disease burden in poor populations with lowest treatment access.</div>
+          <div><strong>2. Microsimulation Tab:</strong> Track survival, CVD events, and deaths over 20-year horizon under status quo vs. selected intervention.</div>
+          <div><strong>3. DCEA Tab:</strong> Compare standard cost-effectiveness (efficiency) vs. equity-weighted results. Detect when interventions disproportionately benefit the poor or rich.</div>
+          <div><strong>4. Compare All:</strong> Head-to-head ranking of all 9 interventions by equity-weighted net health benefit — population policy often ranks highest.</div>
+          <div><strong>5. Epsilon Explorer:</strong> Sensitivity analysis: at what inequality aversion level (ε) does the policy recommendation change?</div>
+          <div><strong>6. HEIP & HEAT:</strong> Health Equity Impact Plane visualizes trade-offs. 9 equity measures (Gini, Theil, Atkinson, etc.) quantify inequality changes.</div>
+          <div><strong>7. District Planning:</strong> Same intervention, different equity impact and implementation readiness across 5 MP districts — enables geographically tailored strategies.</div>
+          <div><strong>8. Logistics:</strong> Resource gaps, drug supply needs, lab capacity, provider workload for a specific district.</div>
+          <div><strong>9. States:</strong> Compare intervention effectiveness across Kerala, Maharashtra, Bihar, Tamil Nadu — demonstrates state-level heterogeneity.</div>
+          <div><strong>10-14. Advanced Tabs:</strong> Demonstrators (diabetes, tobacco tax), PSA (parameter uncertainty), validation, and enhanced cost analysis (CHE rates, impoverishment).</div>
+        </div>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded p-3">
+        <h3 className="text-sm font-bold text-blue-900 mb-2">Key Assumptions & Data Sources</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead><tr className="bg-blue-100"><th className="p-1.5 text-left">Data Domain</th><th className="p-1.5 text-left">Source(s)</th><th className="p-1.5 text-left">How Used</th></tr></thead>
+            <tbody>
+              {dataSources.map((d, i) => (
+                <tr key={i} className={i % 2 ? "bg-white" : "bg-blue-50"}>
+                  <td className="p-1.5 font-medium">{d.source}</td>
+                  <td className="p-1.5 text-gray-600">{d.usedFor}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="bg-yellow-50 border border-yellow-200 rounded p-3">
+        <h3 className="text-sm font-bold text-yellow-900 mb-1.5">Important Limitations</h3>
+        <ul className="text-xs text-yellow-800 space-y-1 list-disc list-inside">
+          <li><strong>Feasibility Prototype:</strong> All intervention parameters and costs are illustrative to demonstrate the platform architecture and analytical workflow.</li>
+          <li><strong>Not for Policy Use:</strong> This prototype should NOT be used to make real policy decisions without full validation against Indian trial and observational data.</li>
+          <li><strong>Synthetic Population:</strong> Generated from NFHS-5 distributions; does not represent any specific real cohort.</li>
+          <li><strong>Parameter Ranges:</strong> Efficacy, adherence, and costs reflect published estimates but require local calibration for specific contexts.</li>
+          <li><strong>Equity Weights:</strong> Relative inequality aversion (ε) is set by user; no consensus "correct" value — reflect policy priorities.</li>
+          <li><strong>Future Work:</strong> The funded project will include formal calibration, sensitivity analysis, and validation against prospective cohort data.</li>
+        </ul>
+      </div>
+
+      <div className="bg-green-50 border border-green-200 rounded p-3">
+        <h3 className="text-sm font-bold text-green-900 mb-1.5">How to Interpret the Results</h3>
+        <div className="text-xs text-green-800 space-y-1.5">
+          <div><strong>ΔQALYs:</strong> Quality-adjusted life years gained by intervention vs. status quo. 1 QALY = 1 year in perfect health.</div>
+          <div><strong>NHB (Net Health Benefit):</strong> = ΔQALYs − (ΔCost / WTP). Positive = cost-effective at WTP threshold. WTP = ₹2,34,859 (1× GDP per capita).</div>
+          <div><strong>Equity-Weighted NHB:</strong> NHB weighted by relative inequality aversion — emphasizes benefits to poorest. If diverges from standard NHB, equity changes the decision.</div>
+          <div><strong>Concentration Index:</strong> Positive = pro-rich (benefits higher-income groups more). Negative = pro-poor.</div>
+          <div><strong>HEIP Quadrants:</strong> NE = Win-win (more health, less inequality). NW = Equitable but costly. SE = Efficient but unequal. SW = Lose-lose.</div>
+        </div>
+      </div>
+
+      <div className="bg-purple-50 border border-purple-200 rounded p-3">
+        <h3 className="text-sm font-bold text-purple-900 mb-1.5">Citation Format</h3>
+        <p className="text-xs text-purple-800 font-mono bg-white p-2 rounded border border-purple-200 mt-1">
+          "NCD-India: Feasibility Prototype v3.0 (Microsimulation + DCEA + Equity Analysis).<br/>
+          ICMR Intermediate Grant Application, March 2026.<br/>
+          Available at: [platform URL]"
+        </p>
+      </div>
+
+      <div className="bg-indigo-50 border border-indigo-200 rounded p-3">
+        <h3 className="text-sm font-bold text-indigo-900 mb-1.5">Quick Start</h3>
+        <ol className="text-xs text-indigo-800 space-y-1 list-decimal list-inside">
+          <li>Adjust <strong>Population Size</strong> (default 5,000) and <strong>Time Horizon</strong> (default 20 years) in the left panel.</li>
+          <li>Select an <strong>Intervention</strong> from the dropdown (or "Use Custom Input" to build your own).</li>
+          <li>Adjust <strong>Inequality Aversion (ε)</strong> — higher = stronger equity priority (default 1.0, moderate).</li>
+          <li>Click <strong>"Run NCD-India Simulation"</strong> — takes ~1 second.</li>
+          <li>Explore tabs: Start with Population → Simulation → DCEA → HEIP for the full equity story.</li>
+        </ol>
+      </div>
+
+      <div className="text-center text-xs text-gray-500 italic">
+        For questions about methodology, data sources, or how to adapt this framework for your state/district, contact the NCD-India team.
+      </div>
+    </div>
+  );
 }
 
 // --- TAB: POPULATION ---
@@ -1645,7 +1799,7 @@ function CostsTab({ population, years }) {
 // ============================================================
 
 export default function NCDIndiaPlatform() {
-  const [tab, setTab] = useState("population");
+  const [tab, setTab] = useState("guide");
   const [state, setState] = useState("Madhya Pradesh");
   const [district, setDistrict] = useState("Indore");
   const [popSize, setPopSize] = useState(5000);
@@ -1683,6 +1837,7 @@ export default function NCDIndiaPlatform() {
   }, [popSize, state, years, epsilon, curInt]);
 
   const tabs = [
+    { id: "guide", label: "Guide", icon: "📖" },
     { id: "population", label: "Population", icon: "👥" },
     { id: "simulation", label: "Microsimulation", icon: "⚙️" },
     { id: "dcea", label: "DCEA", icon: "⚖️" },
@@ -1781,6 +1936,7 @@ export default function NCDIndiaPlatform() {
           </div>
 
           <div className="bg-white border border-t-0 rounded-b-lg p-4 min-h-96 overflow-y-auto" style={{maxHeight: 'calc(100vh - 180px)'}}>
+            {tab === "guide" && <GuideTab/>}
             {tab === "population" && <PopulationTab population={pop}/>}
             {tab === "simulation" && <SimulationTab baseRes={baseRes} intRes={intRes} intName={intName}/>}
             {tab === "dcea" && <DCEATab dcea={dcea}/>}
