@@ -307,6 +307,7 @@ function simulateCohort(population, intervention, years, rng) {
             const effAdh = Math.min(1, baseAdh * (0.80 + p.wealthQ * 0.05));
             riskReduction = 1.0 - (intervention.efficacy / 100) * effAdh;
             additionalCost = intervention.costPerPerson;
+            p.onTreatment = true; // Mark as treated — removes untreated QALY penalty
             treated++;
           }
         }
@@ -345,7 +346,8 @@ function simulateCohort(population, intervention, years, rng) {
         p.alive = false; deaths++; deathsByWealth[p.wealthQ]++;
       }
 
-      // QALY (GBD 2021 disability weights)
+      // QALY (GBD 2021 disability weights) with 3% annual discounting
+      const discountFactor = Math.pow(1.03, -year);
       if (p.alive) {
         let qaly = 1.0;
         if (p.hadEvent) qaly -= (p.eventType === "Stroke" ? 0.32 : 0.15);
@@ -355,11 +357,12 @@ function simulateCohort(population, intervention, years, rng) {
         if (p.hasNephropathy || p.ckdStage >= 3) qaly -= 0.07;
         if (p.onDialysis) qaly -= 0.21;
         if (p.hypertensive && !p.onTreatment) qaly -= 0.03;
+        qaly *= discountFactor; // Standard 3% annual discount rate
         p.qaly += qaly; totalQaly += qaly; qalyByWealth[p.wealthQ] += qaly;
       }
 
-      // Annual costs
-      const annCost = (p.onTreatment ? 2400 : 0) + (p.hadEvent && p.alive ? 18000 : 0) + additionalCost + (p.onDialysis ? 316000 : 0);
+      // Annual costs (discounted at 3%)
+      const annCost = ((p.onTreatment ? 2400 : 0) + (p.hadEvent && p.alive ? 18000 : 0) + additionalCost + (p.onDialysis ? 316000 : 0)) * discountFactor;
       p.cost += annCost; totalCost += annCost; costByWealth[p.wealthQ] += annCost;
     }
     treatedCount = treated;
@@ -388,7 +391,8 @@ function computeDCEA(baseRes, intRes, equityWeights) {
     const dC = int[q].totalCost - base[q].totalCost;
     const nhb = dQ - dC / wtp;
     const wNhb = nhb * equityWeights[q];
-    return { quintile: WEALTH_QUINTILES[q], dQaly: parseFloat(dQ.toFixed(1)), dCost: Math.round(dC), dEvents: int[q].events - base[q].events, dDeaths: int[q].deaths - base[q].deaths, nhb: parseFloat(nhb.toFixed(2)), equityWeight: equityWeights[q], weightedNhb: parseFloat(wNhb.toFixed(2)), icer: dQ > 0 ? Math.round(dC / dQ) : "Dominated" };
+    const icer = dQ > 0.5 ? Math.round(dC / dQ) : (dQ <= 0 && dC > 0 ? "Dominated" : dQ <= 0 && dC <= 0 ? "Cost-Saving" : "Minimal");
+    return { quintile: WEALTH_QUINTILES[q], dQaly: parseFloat(dQ.toFixed(1)), dCost: Math.round(dC), dEvents: int[q].events - base[q].events, dDeaths: int[q].deaths - base[q].deaths, nhb: parseFloat(nhb.toFixed(2)), equityWeight: equityWeights[q], weightedNhb: parseFloat(wNhb.toFixed(2)), icer };
   });
 
   const totDQ = incr.reduce((s, r) => s + r.dQaly, 0);
@@ -398,7 +402,8 @@ function computeDCEA(baseRes, intRes, equityWeights) {
 
   const ci = 2 * [0.2,0.4,0.6,0.8,1.0].reduce((s, p, i) => s + (p - 0.5) * (incr[i].nhb / (stdNHB || 1)), 0);
 
-  return { incrementalByWealth: incr, totalDQaly: parseFloat(totDQ.toFixed(1)), totalDCost: Math.round(totDC), standardNHB: parseFloat(stdNHB.toFixed(2)), equityWeightedNHB: parseFloat(eqNHB.toFixed(2)), standardICER: totDQ > 0 ? Math.round(totDC / totDQ) : "Dominated", concentrationIndex: parseFloat(ci.toFixed(4)), ceaRecommendation: stdNHB > 0 ? "Cost-Effective" : "Not Cost-Effective", dceaRecommendation: eqNHB > 0 ? "Equity-Positive" : "Equity-Negative", diverges: (stdNHB > 0) !== (eqNHB > 0) };
+  const stdICER = totDQ > 0.5 ? Math.round(totDC / totDQ) : (totDQ <= 0 && totDC > 0 ? "Dominated" : totDQ <= 0 && totDC <= 0 ? "Cost-Saving" : "Minimal");
+  return { incrementalByWealth: incr, totalDQaly: parseFloat(totDQ.toFixed(1)), totalDCost: Math.round(totDC), standardNHB: parseFloat(stdNHB.toFixed(2)), equityWeightedNHB: parseFloat(eqNHB.toFixed(2)), standardICER: stdICER, concentrationIndex: parseFloat(ci.toFixed(4)), ceaRecommendation: stdNHB > 0 ? "Cost-Effective" : "Not Cost-Effective", dceaRecommendation: eqNHB > 0 ? "Equity-Positive" : "Equity-Negative", diverges: (stdNHB > 0) !== (eqNHB > 0) };
 }
 
 function getEquityWeights(eps) {
@@ -472,19 +477,29 @@ function computeHEATMeasures(baseRes, intRes) {
     return s + (p - 0.5) * ((make(intRes,i).qaly/make(intRes,i).n) / intMean);
   }, 0);
 
-  // 8. Atkinson Index
+  // 8. Atkinson Index (on per-capita QALY gains — more sensitive for DCEA)
   measures.atkinson = (() => {
-    const means = Array(5).fill(null).map((_, q) => make(intRes, q).qaly / make(intRes, q).n);
-    const overallMean = means.reduce((a,b)=>a+b)/5;
+    const gains = Array(5).fill(null).map((_, q) => {
+      const bpc = make(baseRes, q).qaly / make(baseRes, q).n;
+      const ipc = make(intRes, q).qaly / make(intRes, q).n;
+      return Math.max(0.001, ipc - bpc); // per-capita QALY gain (floor at 0.001 to avoid log issues)
+    });
+    const overallMean = gains.reduce((a,b)=>a+b)/5;
+    if (overallMean <= 0) return 0;
     const epsilon = 0.5;
-    return 1 - Math.pow((1/5) * means.reduce((s,m)=>s+Math.pow(m/overallMean,1-epsilon),0), 1/(1-epsilon));
+    return 1 - Math.pow((1/5) * gains.reduce((s,m)=>s+Math.pow(m/overallMean,1-epsilon),0), 1/(1-epsilon));
   })();
 
-  // 9. Theil Index
+  // 9. Theil Index (on per-capita QALY gains)
   measures.theil = (() => {
-    const means = Array(5).fill(null).map((_, q) => make(intRes, q).qaly / make(intRes, q).n);
-    const overallMean = means.reduce((a,b)=>a+b)/5;
-    return (1/5) * means.reduce((s,m)=>{
+    const gains = Array(5).fill(null).map((_, q) => {
+      const bpc = make(baseRes, q).qaly / make(baseRes, q).n;
+      const ipc = make(intRes, q).qaly / make(intRes, q).n;
+      return Math.max(0.001, ipc - bpc);
+    });
+    const overallMean = gains.reduce((a,b)=>a+b)/5;
+    if (overallMean <= 0) return 0;
+    return (1/5) * gains.reduce((s,m)=>{
       const r = m / overallMean;
       return s + (r > 0 ? r * Math.log(r) : 0);
     }, 0);
@@ -839,7 +854,7 @@ function HEIPHEATTab({ population, years, epsilon }) {
 
     const intData = [];
     Object.entries(INTERVENTIONS).filter(([k])=>k!=="none").forEach(([key, int]) => {
-      const rng = seededRandom(key.length * 5555);
+      const rng = seededRandom(42); // Same seed as baseline for CRN paired comparison
       const res = simulateCohort(population.map(p=>({...p})), int, years, rng);
       const dcea = computeDCEA(base, res, getEquityWeights(epsilon));
       const heat = computeHEATMeasures(base, res);
@@ -848,16 +863,21 @@ function HEIPHEATTab({ population, years, epsilon }) {
       const totalIntQaly = res.results.reduce((s,r)=>s+r.totalQaly,0);
       const deltaQaly = totalIntQaly - totalBaseQaly;
 
+      // Per-capita QALYs using final alive count (consistent denominators)
+      const lastYr = base.results.length - 1;
+      const totalAliveBase = base.results[lastYr].aliveByWealth.reduce((s,v)=>s+v,0) || 1;
+      const totalAliveInt = res.results[lastYr].aliveByWealth.reduce((s,v)=>s+v,0) || 1;
+      const meanBasePC = totalBaseQaly / totalAliveBase;
+      const meanIntPC = totalIntQaly / totalAliveInt;
+
       const ineqBase = Math.sqrt(Array(5).fill(null).reduce((s,_,q)=> {
-        const qBase = base.results.reduce((s,r)=>s+r.qalyByWealth[q],0) / (base.results[base.results.length-1].aliveByWealth[q] || 1);
-        const meanQaly = totalBaseQaly / population.length;
-        return s + (qBase - meanQaly) * (qBase - meanQaly);
+        const qBase = base.results.reduce((s,r)=>s+r.qalyByWealth[q],0) / (base.results[lastYr].aliveByWealth[q] || 1);
+        return s + (qBase - meanBasePC) * (qBase - meanBasePC);
       }, 0) / 5);
 
       const ineqInt = Math.sqrt(Array(5).fill(null).reduce((s,_,q)=> {
-        const qInt = res.results.reduce((s,r)=>s+r.qalyByWealth[q],0) / (res.results[res.results.length-1].aliveByWealth[q] || 1);
-        const meanQaly = totalIntQaly / population.length;
-        return s + (qInt - meanQaly) * (qInt - meanQaly);
+        const qInt = res.results.reduce((s,r)=>s+r.qalyByWealth[q],0) / (res.results[lastYr].aliveByWealth[q] || 1);
+        return s + (qInt - meanIntPC) * (qInt - meanIntPC);
       }, 0) / 5);
 
       const deltaInequality = ineqInt - ineqBase;
@@ -895,7 +915,7 @@ function HEIPHEATTab({ population, years, epsilon }) {
           <ResponsiveContainer width="100%" height={280}>
             <ScatterChart margin={{top:20,right:20,bottom:60,left:60}}>
               <CartesianGrid strokeDasharray="3 3"/>
-              <XAxis dataKey="x" name="ΔQALYs (Health)" tick={{fontSize:9}} label={{value:'Change in Total Health (ΔQALYs)',position:'bottom',offset:10,fontSize:10}}/>
+              <XAxis dataKey="x" name="ΔQALYs (Health)" tick={{fontSize:9}} tickFormatter={v => Number.isInteger(v) ? v : v.toFixed(0)} label={{value:'Change in Total Health (ΔQALYs)',position:'bottom',offset:10,fontSize:10}}/>
               <YAxis dataKey="y" name="ΔIneq" tick={{fontSize:9}} label={{value:'Change in Inequality (↑ = less unequal)',angle:-90,position:'insideLeft',fontSize:10}}/>
               <Tooltip cursor={{strokeDasharray:'3 3'}} contentStyle={{fontSize:11}} formatter={(v,name)=> [v.toFixed(2), name]} labelFormatter={(label,pay)=>pay[0]?.name}/>
               <ReferenceLine x={0} stroke="#999" strokeDasharray="5 5"/>
@@ -946,7 +966,7 @@ function DistrictTab({ intervention, years }) {
       const pop = generatePopulation(2000, DISTRICTS[d], rng, true);
       const rngB = seededRandom(d.length * 8888);
       const base = simulateCohort(pop.map(p=>({...p})), INTERVENTIONS.none, years, rngB);
-      const rngI = seededRandom(d.length * 9999);
+      const rngI = seededRandom(d.length * 8888); // Same seed as baseline for CRN
       const intR = simulateCohort(pop.map(p=>({...p})), intervention, years, rngI);
       const w = getEquityWeights(1.0);
       const dcea = computeDCEA(base, intR, w);
@@ -1123,7 +1143,7 @@ function InterventionCompareTab({ population, years, epsilon }) {
     const w = getEquityWeights(epsilon);
 
     return Object.entries(INTERVENTIONS).filter(([k]) => k !== "none").map(([key, int]) => {
-      const rng = seededRandom(key.length * 5555);
+      const rng = seededRandom(42); // Same seed as baseline for CRN paired comparison
       const res = simulateCohort(population.map(p=>({...p})), int, years, rng);
       const dcea = computeDCEA(base, res, w);
       const totalEvents = base.results.reduce((s,r)=>s+r.events,0);
@@ -1199,7 +1219,7 @@ function EpsilonTab({ population, intervention, years }) {
     if (!population.length) return [];
     const rngB = seededRandom(42);
     const base = simulateCohort(population.map(p=>({...p})), INTERVENTIONS.none, years, rngB);
-    const rngI = seededRandom(100);
+    const rngI = seededRandom(42); // Same seed as baseline for CRN
     const intR = simulateCohort(population.map(p=>({...p})), intervention, years, rngI);
 
     const pts = [];
@@ -1236,7 +1256,7 @@ function StateTab({ intervention, years, popSize }) {
       const pop = generatePopulation(Math.min(Math.floor(popSize / 3), 50000), name, rng);
       const rngB = seededRandom(name.length * 2000);
       const base = simulateCohort(pop.map(p=>({...p})), INTERVENTIONS.none, years, rngB);
-      const rngI = seededRandom(name.length * 3000);
+      const rngI = seededRandom(name.length * 2000); // Same seed as baseline for CRN
       const intR = simulateCohort(pop.map(p=>({...p})), intervention, years, rngI);
       const dcea = computeDCEA(base, intR, getEquityWeights(1.0));
       return { state: params.code, stateFull: name, ...dcea };
@@ -1295,7 +1315,7 @@ function Demonstrator2Tab({ population, years }) {
         efficacy: strat.efficacy,
         costPerPerson: strat.cost,
       };
-      const rng = seededRandom(100 + idx);
+      const rng = seededRandom(42); // Same seed as baseline for CRN
       const res = simulateCohort(population.map(p=>({...p})), mockInt, years, rng);
       const dcea1 = computeDCEA(base, res, getEquityWeights(0.0));
       const dcea2 = computeDCEA(base, res, getEquityWeights(2.0));
@@ -1407,7 +1427,7 @@ function Demonstrator3Tab({ population, years }) {
         efficacy: 18 + (tax.increase * 12),
         costPerPerson: 0,
       };
-      const rng = seededRandom(200 + idx);
+      const rng = seededRandom(42); // Same seed as baseline for CRN
       const res = simulateCohort(population.map(p=>({...p})), mockInt, years, rng);
       const dcea = computeDCEA(base, res, getEquityWeights(1.0));
 
@@ -1510,12 +1530,12 @@ function PSATab({ population, intervention, years }) {
 
     const results = [];
     for (let iter = 0; iter < iterations; iter++) {
-      const rng = seededRandom(1000 + iter);
+      const paramRng = seededRandom(1000 + iter); // Separate RNG for parameter sampling
 
       // Parameter uncertainty
-      const effMult = 0.8 + rng() * 0.4;
-      const costMult = 0.7 + rng() * 0.6;
-      const adhMult = 0.75 + rng() * 0.5;
+      const effMult = 0.8 + paramRng() * 0.4;
+      const costMult = 0.7 + paramRng() * 0.6;
+      const adhMult = 0.75 + paramRng() * 0.5;
 
       const varInt = {
         ...intervention,
@@ -1524,19 +1544,23 @@ function PSATab({ population, intervention, years }) {
         adherence: Math.max(10, Math.min(100, intervention.adherence * adhMult)),
       };
 
+      const rng = seededRandom(42); // Same seed as baseline for CRN
       const res = simulateCohort(population.map(p=>({...p})), varInt, years, rng);
       const dcea = computeDCEA(base, res, getEquityWeights(1.0));
-      results.push({ iter, nhb: dcea.standardNHB, eqNhb: dcea.equityWeightedNHB, cost: varInt.costPerPerson, efficacy: varInt.efficacy });
+      const totalDQ = dcea.totalDQaly;
+      const totalDC = dcea.totalDCost;
+      results.push({ iter, nhb: dcea.standardNHB, eqNhb: dcea.equityWeightedNHB, cost: varInt.costPerPerson, efficacy: varInt.efficacy, dQaly: totalDQ, dCost: totalDC });
     }
 
     const meanNHB = results.reduce((s, r) => s + r.nhb, 0) / iterations;
     const sdNHB = Math.sqrt(results.reduce((s, r) => s + (r.nhb - meanNHB) ** 2, 0) / iterations);
     const ci95 = [meanNHB - 1.96 * sdNHB, meanNHB + 1.96 * sdNHB];
 
+    // CEAC: probability CE at each WTP threshold (recompute NHB at each WTP)
     const ceacData = [];
-    for (let wtp = 50000; wtp <= 300000; wtp += 10000) {
-      const pctCE = (results.filter(r => r.nhb > 0).length / iterations) * 100;
-      ceacData.push({ wtp: wtp / 1000, pctCE });
+    for (let wtp = 50000; wtp <= 500000; wtp += 10000) {
+      const nCE = results.filter(r => (r.dQaly - r.dCost / wtp) > 0).length;
+      ceacData.push({ wtp: wtp / 1000, pctCE: (nCE / iterations) * 100 });
     }
 
     return { results, meanNHB, sdNHB, ci95, ceacData };
@@ -1602,27 +1626,60 @@ function ValidationTab({ population, years }) {
     const rng = seededRandom(42);
     const sim = simulateCohort(population.map(p=>({...p})), INTERVENTIONS.none, years, rng);
 
-    // Simulated vs observed (mock GBD data)
-    const gbd2021CVDMort = { MP: 195, KL: 245, BR: 172, MH: 220, TN: 238 };
-    const nfhs5DMPrev = { Q1: 0.068, Q2: 0.085, Q3: 0.112, Q4: 0.148, Q5: 0.189 };
-    const nfhs5HTPrev = { Q1: 0.18, Q2: 0.20, Q3: 0.23, Q4: 0.26, Q5: 0.30 };
+    // Compute ACTUAL simulated metrics from population
+    const N = population.length;
+    const simHTPrev = population.filter(p => p.hypertensive).length / N;
+    const simDMPrev = population.filter(p => p.diabetic).length / N;
+    const simTobPrev = population.filter(p => p.tobacco).length / N;
+    const simMeanSBP = population.reduce((s, p) => s + p.sbp, 0) / N;
+    const simMeanBMI = population.reduce((s, p) => s + p.bmi, 0) / N;
 
-    const simCVDMort = 195; // Mock simulated value
-    const simDMPrev = 0.11; // Mock
-    const simHTPrev = 0.23; // Mock
+    // Simulated event rate (annualized per 100K)
+    const totalEvents = sim.results.reduce((s, r) => s + r.events, 0);
+    const totalDeaths = sim.results.reduce((s, r) => s + r.deaths, 0);
+    const simCVDEventRate = Math.round((totalEvents / N / years) * 100000);
+    const simDeathRate = Math.round((totalDeaths / N / years) * 100000);
 
-    // Calibration: observed vs predicted
-    const calibData = [
-      { metric: "CVD Mortality", observed: 195, predicted: simCVDMort, diff: 0 },
-      { metric: "DM Prevalence (%)", observed: 11, predicted: simDMPrev * 100, diff: 0 },
-      { metric: "HT Prevalence (%)", observed: 23, predicted: simHTPrev * 100, diff: 0 },
+    // Observed reference values (GBD 2021, NFHS-5)
+    const observed = [
+      { metric: "HT Prevalence (%)", observed: 22.0, predicted: +(simHTPrev * 100).toFixed(1), source: "NFHS-5 (overall ~22%)" },
+      { metric: "DM Prevalence (%)", observed: 8.0, predicted: +(simDMPrev * 100).toFixed(1), source: "NFHS-5 (age 15-49: 4.9%)" },
+      { metric: "Tobacco Use (%)", observed: 27.0, predicted: +(simTobPrev * 100).toFixed(1), source: "NFHS-5 (~27% any use)" },
+      { metric: "Mean SBP (mmHg)", observed: 127.0, predicted: +simMeanSBP.toFixed(1), source: "NFHS-5 BP measurements" },
+      { metric: "Mean BMI", observed: 23.2, predicted: +simMeanBMI.toFixed(1), source: "NFHS-5 (adults)" },
+      { metric: "CVD Event Rate (/100K/yr)", observed: 800, predicted: simCVDEventRate, source: "GBD 2021 India" },
+      { metric: "All-Cause Mortality (/100K/yr)", observed: 750, predicted: simDeathRate, source: "SRS 2022 (30-69yr)" },
     ];
 
-    // R² and calibration slope (mock)
-    const rSquared = 0.87;
-    const calibSlope = 0.95;
+    // Compute calibration metrics
+    const calibData = observed.map(d => ({
+      ...d,
+      diff: d.observed !== 0 ? +(((d.predicted - d.observed) / d.observed) * 100).toFixed(1) : 0,
+    }));
 
-    return { calibData, rSquared, calibSlope, sim };
+    // R² from observed vs predicted
+    const obsArr = calibData.map(d => d.observed);
+    const predArr = calibData.map(d => d.predicted);
+    const obsMean = obsArr.reduce((s, v) => s + v, 0) / obsArr.length;
+    const predMean = predArr.reduce((s, v) => s + v, 0) / predArr.length;
+    const ssRes = obsArr.reduce((s, v, i) => s + (v - predArr[i]) ** 2, 0);
+    const ssTot = obsArr.reduce((s, v) => s + (v - obsMean) ** 2, 0);
+    const rSquared = ssTot > 0 ? Math.max(0, 1 - ssRes / ssTot) : 0;
+
+    // Calibration slope (regression of observed on predicted)
+    const cov = obsArr.reduce((s, v, i) => s + (v - obsMean) * (predArr[i] - predMean), 0);
+    const varPred = predArr.reduce((s, v) => s + (v - predMean) ** 2, 0);
+    const calibSlope = varPred > 0 ? cov / varPred : 1;
+
+    // HT prevalence by quintile comparison
+    const htByQ = Array(5).fill(null).map((_, q) => {
+      const qPop = population.filter(p => p.wealthQ === q);
+      return { quintile: WEALTH_QUINTILES[q].split(" ")[0],
+        observed: NFHS_PARAMS.hypertension_prev[q] * 100,
+        simulated: +((qPop.filter(p => p.hypertensive).length / (qPop.length || 1)) * 100).toFixed(1) };
+    });
+
+    return { calibData, rSquared, calibSlope, sim, htByQ };
   }, [population, years]);
 
   if (!validationData) return <div className="p-12 text-center text-gray-400">Run simulation first</div>;
@@ -1633,29 +1690,37 @@ function ValidationTab({ population, years }) {
     predicted: d.predicted,
   }));
 
+  const rSq = validationData.rSquared;
+  const calSlope = validationData.calibSlope;
+  const statusColor = rSq > 0.8 ? "green" : rSq > 0.5 ? "yellow" : "red";
+  const statusText = rSq > 0.8 ? "Good" : rSq > 0.5 ? "Moderate" : "Needs Calibration";
+
   return (
     <div className="space-y-4">
-      <div className="text-sm font-semibold text-gray-700">Model Validation Against Observed Data</div>
-      <div className="text-xs text-gray-600 mb-2">Calibration: Simulated vs GBD 2021 / NFHS-5 observed values</div>
+      <div className="text-sm font-semibold text-gray-700">Model Validation — Simulated vs Observed (GBD 2021 / NFHS-5)</div>
+      <div className="bg-blue-50 border border-blue-200 rounded p-2.5 text-xs text-blue-900">
+        <b>What this shows:</b> Compares simulated population metrics against observed Indian data from NFHS-5 and GBD 2021. R² and calibration slope indicate how well the synthetic population and disease model reproduce real-world patterns. All values are computed from the actual simulation, not mocked.
+      </div>
 
       <div className="grid grid-cols-3 gap-2">
-        <Metric label="Model Fit (R²)" value={validationData.rSquared.toFixed(3)} sub="calibration" color="blue"/>
-        <Metric label="Calibration Slope" value={validationData.calibSlope.toFixed(2)} sub="ideal = 1.0" color="green"/>
-        <Metric label="Validation Status" value="Good" sub="model well-calibrated" color="green"/>
+        <Metric label="Model Fit (R²)" value={rSq.toFixed(3)} sub="1.0 = perfect fit" color="blue"/>
+        <Metric label="Calibration Slope" value={calSlope.toFixed(2)} sub="ideal = 1.0" color={Math.abs(calSlope - 1) < 0.2 ? "green" : "orange"}/>
+        <Metric label="Validation Status" value={statusText} sub={`based on R² = ${rSq.toFixed(2)}`} color={statusColor}/>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <div className="text-xs font-semibold text-gray-600 mb-1">Observed vs Predicted (Mock GBD/NFHS)</div>
+          <div className="text-xs font-semibold text-gray-600 mb-1">Observed vs Simulated — Key Metrics</div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse">
-              <thead><tr className="bg-gray-700 text-white">{["Metric","Observed","Predicted","Diff"].map(h=><th key={h} className="p-1.5">{h}</th>)}</tr></thead>
+              <thead><tr className="bg-gray-700 text-white">{["Metric","Observed","Simulated","% Diff","Source"].map(h=><th key={h} className="p-1.5">{h}</th>)}</tr></thead>
               <tbody>{validationData.calibData.map((d, i)=>(
                 <tr key={i} className={i%2?"bg-gray-50":"bg-white"}>
                   <td className="p-1.5 font-medium">{d.metric}</td>
                   <td className="p-1.5 text-right">{d.observed}</td>
-                  <td className="p-1.5 text-right">{d.predicted.toFixed(1)}</td>
-                  <td className="p-1.5 text-right">{d.diff}</td>
+                  <td className="p-1.5 text-right">{d.predicted}</td>
+                  <td className="p-1.5 text-right" style={{color: Math.abs(d.diff) < 15 ? "#38a169" : Math.abs(d.diff) < 30 ? "#d69e2e" : "#c53030"}}>{d.diff > 0 ? "+" : ""}{d.diff}%</td>
+                  <td className="p-1.5 text-gray-500" style={{fontSize:'10px'}}>{d.source}</td>
                 </tr>
               ))}</tbody>
             </table>
@@ -1663,168 +1728,229 @@ function ValidationTab({ population, years }) {
         </div>
 
         <div>
-          <div className="text-xs font-semibold text-gray-600 mb-1">Calibration Plot: Observed vs Predicted</div>
+          <div className="text-xs font-semibold text-gray-600 mb-1">HT Prevalence by Wealth Quintile — Observed vs Simulated</div>
           <ResponsiveContainer width="100%" height={200}>
-            <ScatterChart margin={{top:10,right:10,bottom:40,left:60}}>
+            <BarChart data={validationData.htByQ}>
               <CartesianGrid strokeDasharray="3 3"/>
-              <XAxis dataKey="predicted" name="Predicted" tick={{fontSize:9}} label={{value:'Predicted Value',position:'bottom',offset:10,fontSize:9}}/>
-              <YAxis dataKey="observed" name="Observed" tick={{fontSize:9}} label={{value:'Observed Value',angle:-90,position:'insideLeft',fontSize:9}}/>
-              <Tooltip cursor={{strokeDasharray:'3 3'}} contentStyle={{fontSize:10}}/>
-              <Scatter name="Metrics" data={calibrationPlot} fill="#2b6cb0" isAnimationActive={false}/>
-              <ReferenceLine x={0} stroke="#999" strokeDasharray="5 5"/>
-              <ReferenceLine y={0} stroke="#999" strokeDasharray="5 5"/>
-            </ScatterChart>
+              <XAxis dataKey="quintile" tick={{fontSize:10}}/>
+              <YAxis tick={{fontSize:10}} label={{value:'HT Prev %',angle:-90,position:'insideLeft',fontSize:9}}/>
+              <Tooltip contentStyle={{fontSize:11}}/>
+              <Legend wrapperStyle={{fontSize:9}}/>
+              <Bar dataKey="observed" fill="#2b6cb0" name="NFHS-5 Observed"/>
+              <Bar dataKey="simulated" fill="#38a169" name="Model Simulated"/>
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      <div className="bg-green-50 border border-green-200 rounded p-3 text-xs text-green-900">
-        <b>Validation Summary:</b> Simulated model shows good calibration to GBD 2021 and NFHS-5 observed data (R² = {validationData.rSquared.toFixed(3)}, calibration slope ≈ {validationData.calibSlope.toFixed(2)}). Model is ready for policy scenario analysis.
+      <div className={`${rSq > 0.7 ? "bg-green-50 border-green-200" : "bg-yellow-50 border-yellow-200"} border rounded p-3 text-xs ${rSq > 0.7 ? "text-green-900" : "text-yellow-900"}`}>
+        <b>Validation Summary:</b> R² = {rSq.toFixed(3)}, calibration slope = {calSlope.toFixed(2)}.
+        {rSq > 0.7 ? " Model reproduces observed Indian NCD patterns well." : " Model shows moderate fit — full calibration planned for funded project."}
+        {" "}Note: This prototype uses NFHS-5 distributions as input, so prevalence metrics should closely match. Event rates and mortality comparisons against GBD 2021 provide independent validation of the disease progression model.
       </div>
     </div>
   );
 }
 
-// --- TAB: COSTS ---
+// --- TAB: COSTS (Financial Protection & Equity Analysis) ---
 
-function CostsTab({ population, years }) {
+function CostsTab({ population, years, intervention, baseRes, intRes }) {
   const costData = useMemo(() => {
     if (!population.length) return null;
-    const rng = seededRandom(42);
-    const sim = simulateCohort(population.map(p=>({...p})), INTERVENTIONS.none, years, rng);
 
-    const totalOOP = sim.population.reduce((s, p) => s + p.oopCost, 0);
-    const totalPublic = sim.population.reduce((s, p) => s + p.publicCost, 0);
-    const totalPrivate = sim.population.reduce((s, p) => s + p.privateCost, 0);
-    const totalPMJAY = sim.population.reduce((s, p) => s + p.pmjayCost, 0);
+    // Use pre-computed simulation results if available, otherwise run fresh
+    let baseSim, intSim;
+    if (baseRes && intRes) {
+      baseSim = baseRes;
+      intSim = intRes;
+    } else {
+      const rng = seededRandom(42);
+      baseSim = simulateCohort(population.map(p=>({...p})), INTERVENTIONS.none, years, rng);
+      const rng2 = seededRandom(42);
+      intSim = simulateCohort(population.map(p=>({...p})), intervention || INTERVENTIONS.none, years, rng2);
+    }
 
-    const costByQ = Array(5).fill(null).map((_, q) => {
-      const popQ = sim.population.filter(p => p.wealthQ === q);
-      return {
-        quintile: WEALTH_QUINTILES[q],
-        oop: popQ.reduce((s, p) => s + p.oopCost, 0) / popQ.length,
-        public: popQ.reduce((s, p) => s + p.publicCost, 0) / popQ.length,
-        private: popQ.reduce((s, p) => s + p.privateCost, 0) / popQ.length,
-        pmjay: popQ.reduce((s, p) => s + p.pmjayCost, 0) / popQ.length,
-      };
-    });
+    const income = [50000, 80000, 120000, 180000, 300000]; // Annual income by quintile (NSSO 75th Round estimates)
+    const povertyLine = 190 * 365; // ₹190/day Tendulkar line
 
-    // CHE (Catastrophic Health Expenditure): 40%+ of income on health
-    const cheRateByQ = Array(5).fill(null).map((_, q) => {
-      const income = [50000, 80000, 120000, 180000, 300000]; // mock annual income by quintile
-      const popQ = sim.population.filter(p => p.wealthQ === q);
-      const nCHE = popQ.filter(p => (p.oopCost / income[q]) > 0.4).length;
-      return (nCHE / popQ.length) * 100;
-    });
+    const makeFinance = (sim) => {
+      const totalOOP = sim.population.reduce((s, p) => s + p.oopCost, 0);
+      const totalPublic = sim.population.reduce((s, p) => s + p.publicCost, 0);
+      const totalPMJAY = sim.population.reduce((s, p) => s + p.pmjayCost, 0);
+      const totalCost = sim.population.reduce((s, p) => s + p.cost, 0);
 
-    // Impoverishment: households pushed below poverty line
-    const povertyLine = 190 * 365; // ₹190/person/day
-    const impoverishByQ = Array(5).fill(null).map((_, q) => {
-      const income = [50000, 80000, 120000, 180000, 300000];
-      const popQ = sim.population.filter(p => p.wealthQ === q);
-      const nImpov = popQ.filter(p => (income[q] - p.oopCost) < povertyLine).length;
-      return (nImpov / popQ.length) * 100;
-    });
+      const costByQ = Array(5).fill(null).map((_, q) => {
+        const popQ = sim.population.filter(p => p.wealthQ === q);
+        const n = popQ.length || 1;
+        return {
+          quintile: WEALTH_QUINTILES[q],
+          oop: popQ.reduce((s, p) => s + p.oopCost, 0) / n,
+          public: popQ.reduce((s, p) => s + p.publicCost, 0) / n,
+          pmjay: popQ.reduce((s, p) => s + p.pmjayCost, 0) / n,
+          total: popQ.reduce((s, p) => s + p.cost, 0) / n,
+        };
+      });
 
-    return {
-      totalOOP, totalPublic, totalPrivate, totalPMJAY,
-      costByQ, cheRateByQ, impoverishByQ,
+      const cheRateByQ = Array(5).fill(null).map((_, q) => {
+        const popQ = sim.population.filter(p => p.wealthQ === q);
+        const nCHE = popQ.filter(p => (p.oopCost / (income[q] * years)) > 0.10).length; // 10% of annual income over horizon
+        return (nCHE / (popQ.length || 1)) * 100;
+      });
+
+      const impoverishByQ = Array(5).fill(null).map((_, q) => {
+        const popQ = sim.population.filter(p => p.wealthQ === q);
+        const nImpov = popQ.filter(p => (income[q] - (p.oopCost / years)) < povertyLine).length;
+        return (nImpov / (popQ.length || 1)) * 100;
+      });
+
+      return { totalOOP, totalPublic, totalPMJAY, totalCost, costByQ, cheRateByQ, impoverishByQ };
     };
-  }, [population, years]);
+
+    const base = makeFinance(baseSim);
+    const int = makeFinance(intSim);
+
+    return { base, int, income };
+  }, [population, years, intervention, baseRes, intRes]);
 
   if (!costData) return <div className="p-12 text-center text-gray-400">Run simulation first</div>;
 
-  const totalCost = costData.totalOOP + costData.totalPublic + costData.totalPrivate + costData.totalPMJAY;
+  const { base, int } = costData;
+  const hasInt = intervention && intervention.type !== "none";
+  const intName = intervention?.name || "Selected Intervention";
+
   const costBreakdown = [
-    { name: "Out-of-Pocket", value: costData.totalOOP },
-    { name: "Public (Tax)", value: costData.totalPublic },
-    { name: "Private (Insurance)", value: costData.totalPrivate },
-    { name: "PMJAY (Scheme)", value: costData.totalPMJAY },
+    { name: "Out-of-Pocket (OOP)", value: base.totalOOP },
+    { name: "Public (Tax-funded)", value: base.totalPublic },
+    { name: "PMJAY (AB-PMJAY)", value: base.totalPMJAY },
   ].filter(d => d.value > 0);
+  const totalBase = base.totalOOP + base.totalPublic + base.totalPMJAY;
 
-  const costPieData = costBreakdown.map(d => ({ ...d, share: (d.value / totalCost * 100).toFixed(1) }));
-
-  const cheData = costData.cheRateByQ.map((rate, i) => ({
+  const cheCompare = Array(5).fill(null).map((_, i) => ({
     quintile: WEALTH_QUINTILES[i].split(" ")[0],
-    "CHE Rate %": parseFloat(rate.toFixed(1)),
+    "Status Quo": parseFloat(base.cheRateByQ[i].toFixed(1)),
+    ...(hasInt ? {[intName]: parseFloat(int.cheRateByQ[i].toFixed(1))} : {}),
   }));
 
-  const impoverData = costData.impoverishByQ.map((rate, i) => ({
+  const impoverCompare = Array(5).fill(null).map((_, i) => ({
     quintile: WEALTH_QUINTILES[i].split(" ")[0],
-    "Impoverished %": parseFloat(rate.toFixed(1)),
+    "Status Quo": parseFloat(base.impoverishByQ[i].toFixed(1)),
+    ...(hasInt ? {[intName]: parseFloat(int.impoverishByQ[i].toFixed(1))} : {}),
+  }));
+
+  const oopByQ = Array(5).fill(null).map((_, i) => ({
+    quintile: WEALTH_QUINTILES[i].split(" ")[0],
+    "Status Quo OOP": Math.round(base.costByQ[i].oop),
+    ...(hasInt ? {[`${intName} OOP`]: Math.round(int.costByQ[i].oop)} : {}),
+    "Annual Income": costData.income[i],
   }));
 
   return (
     <div className="space-y-4">
-      <div className="text-sm font-semibold text-gray-700">Enhanced Cost Engine: Health Finance & Equity</div>
-      <div className="text-xs text-gray-600 mb-2">OOP, Public, Private, & PMJAY cost tracking; CHE rates & impoverishment by quintile</div>
+      <div className="text-sm font-semibold text-gray-700">Financial Protection & Health Equity Analysis</div>
+      <div className="bg-blue-50 border border-blue-200 rounded p-2.5 text-xs text-blue-900">
+        <b>What this module shows:</b> This tab models the financial consequences of NCD events on households. It tracks out-of-pocket (OOP) costs, public financing, and AB-PMJAY coverage for CVD events (MI, Stroke, HF) and ongoing treatment costs. It measures catastrophic health expenditure (CHE) and impoverishment risk across wealth quintiles — key metrics for Universal Health Coverage (UHC) monitoring.
+        {hasInt && <span> It also compares financial protection under <b>{intName}</b> vs status quo.</span>}
+      </div>
 
       <div className="grid grid-cols-4 gap-2">
-        <Metric label="Total OOP Costs" value={`₹${(costData.totalOOP/10000000).toFixed(2)}Cr`} sub="catastrophic risk" color="red"/>
-        <Metric label="Public Financing" value={`₹${(costData.totalPublic/10000000).toFixed(2)}Cr`} sub="tax-funded" color="blue"/>
-        <Metric label="PMJAY Coverage" value={`₹${(costData.totalPMJAY/10000000).toFixed(2)}Cr`} sub="scheme protected" color="green"/>
-        <Metric label="Total Healthcare Cost" value={`₹${(totalCost/10000000).toFixed(2)}Cr`} sub={`over ${years}yr horizon`} color="purple"/>
+        <Metric label="OOP Burden (Status Quo)" value={`₹${(base.totalOOP/10000000).toFixed(2)}Cr`} sub="households at risk" color="red"/>
+        <Metric label="Public Financing" value={`₹${(base.totalPublic/10000000).toFixed(2)}Cr`} sub="tax-funded care" color="blue"/>
+        <Metric label="PMJAY Protection" value={`₹${(base.totalPMJAY/10000000).toFixed(2)}Cr`} sub="scheme coverage" color="green"/>
+        {hasInt ? (
+          <Metric label="OOP Reduction" value={`${base.totalOOP > 0 ? ((1 - int.totalOOP/base.totalOOP)*100).toFixed(1) : 0}%`} sub={`with ${intName}`} color={int.totalOOP < base.totalOOP ? "green" : "orange"}/>
+        ) : (
+          <Metric label="Total Health Cost" value={`₹${(totalBase/10000000).toFixed(2)}Cr`} sub={`over ${years}yr`} color="purple"/>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <div className="text-xs font-semibold text-gray-600 mb-1">Cost Breakdown by Financing Source</div>
+          <div className="text-xs font-semibold text-gray-600 mb-1">Healthcare Financing Sources (Status Quo)</div>
           <ResponsiveContainer width="100%" height={200}>
-            <PieChart><Pie data={costBreakdown} cx="50%" cy="50%" outerRadius={65} dataKey="value" label={({name, share}) => `${name} ${share}%`} labelLine={false} style={{fontSize:9}}>
-              {costBreakdown.map((_, i) => <Cell key={i} fill={COLORS.pie[i]}/>)}
+            <PieChart><Pie data={costBreakdown} cx="50%" cy="50%" outerRadius={65} dataKey="value" label={({name, percent}) => `${name.split("(")[0].trim()} ${(percent*100).toFixed(0)}%`} labelLine={false} style={{fontSize:9}}>
+              {costBreakdown.map((_, i) => <Cell key={i} fill={["#c53030","#2b6cb0","#38a169"][i]}/>)}
             </Pie><Tooltip formatter={v => `₹${(v/10000000).toFixed(2)}Cr`} contentStyle={{fontSize:11}}/></PieChart>
           </ResponsiveContainer>
+          <div className="text-xs text-center text-gray-500 mt-1">OOP share reflects NSSO 75th Round pattern: poorest bear heaviest burden</div>
         </div>
 
         <div>
-          <div className="text-xs font-semibold text-gray-600 mb-1">Cost per Quintile (by Source)</div>
-          <div className="overflow-x-auto max-h-36">
-            <table className="w-full text-xs border-collapse">
-              <thead><tr className="bg-gray-700 text-white">{["Quintile","OOP","Public","Private","PMJAY"].map(h=><th key={h} className="p-1.5">{h}</th>)}</tr></thead>
-              <tbody>{costData.costByQ.map((c, i)=>(
-                <tr key={i} className={i%2?"bg-gray-50":"bg-white"}>
-                  <td className="p-1.5 font-semibold">{c.quintile.split(" ")[0]}</td>
-                  <td className="p-1.5 text-right">₹{Math.round(c.oop).toLocaleString()}</td>
-                  <td className="p-1.5 text-right">₹{Math.round(c.public).toLocaleString()}</td>
-                  <td className="p-1.5 text-right">₹{Math.round(c.private).toLocaleString()}</td>
-                  <td className="p-1.5 text-right">₹{Math.round(c.pmjay).toLocaleString()}</td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </div>
+          <div className="text-xs font-semibold text-gray-600 mb-1">Per-Capita OOP vs Annual Income by Quintile</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={oopByQ}>
+              <CartesianGrid strokeDasharray="3 3"/>
+              <XAxis dataKey="quintile" tick={{fontSize:10}}/>
+              <YAxis tick={{fontSize:10}} tickFormatter={v => `₹${(v/1000).toFixed(0)}K`}/>
+              <Tooltip contentStyle={{fontSize:11}} formatter={v => `₹${v.toLocaleString()}`}/>
+              <Legend wrapperStyle={{fontSize:9}}/>
+              <Bar dataKey="Status Quo OOP" fill="#c53030"/>
+              {hasInt && <Bar dataKey={`${intName} OOP`} fill="#38a169"/>}
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <div className="text-xs font-semibold text-gray-600 mb-1">Catastrophic Health Expenditure (CHE) Rate by Quintile</div>
+          <div className="text-xs font-semibold text-gray-600 mb-1">Catastrophic Health Expenditure (CHE &gt;10% of income/yr)</div>
           <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={cheData}>
+            <BarChart data={cheCompare}>
               <CartesianGrid strokeDasharray="3 3"/>
               <XAxis dataKey="quintile" tick={{fontSize:10}}/>
               <YAxis tick={{fontSize:10}} label={{value:'CHE Rate %',angle:-90,position:'insideLeft',fontSize:9}}/>
               <Tooltip contentStyle={{fontSize:11}}/>
-              <Bar dataKey="CHE Rate %" fill="#c53030" name="CHE Rate %"/>
+              <Legend wrapperStyle={{fontSize:9}}/>
+              <Bar dataKey="Status Quo" fill="#c53030"/>
+              {hasInt && <Bar dataKey={intName} fill="#38a169"/>}
             </BarChart>
           </ResponsiveContainer>
         </div>
 
         <div>
-          <div className="text-xs font-semibold text-gray-600 mb-1">Impoverishment due to Health Spending by Quintile</div>
+          <div className="text-xs font-semibold text-gray-600 mb-1">Impoverishment Risk (income - OOP &lt; poverty line)</div>
           <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={impoverData}>
+            <BarChart data={impoverCompare}>
               <CartesianGrid strokeDasharray="3 3"/>
               <XAxis dataKey="quintile" tick={{fontSize:10}}/>
               <YAxis tick={{fontSize:10}} label={{value:'Impoverished %',angle:-90,position:'insideLeft',fontSize:9}}/>
               <Tooltip contentStyle={{fontSize:11}}/>
-              <Bar dataKey="Impoverished %" fill="#dd6b20" name="Impoverished %"/>
+              <Legend wrapperStyle={{fontSize:9}}/>
+              <Bar dataKey="Status Quo" fill="#dd6b20"/>
+              {hasInt && <Bar dataKey={intName} fill="#38a169"/>}
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
+      <div className="overflow-x-auto">
+        <div className="text-xs font-semibold text-gray-600 mb-1">Detailed Financial Burden by Quintile</div>
+        <table className="w-full text-xs border-collapse">
+          <thead><tr className="bg-gray-800 text-white">{["Quintile","Annual Income","OOP/Person","OOP as % Income","CHE Rate","Impoverishment","PMJAY Coverage"].map(h=><th key={h} className="p-1.5 text-left">{h}</th>)}</tr></thead>
+          <tbody>{Array(5).fill(null).map((_, i) => {
+            const oopPct = base.costByQ[i].oop > 0 ? ((base.costByQ[i].oop / years) / costData.income[i] * 100).toFixed(1) : "0.0";
+            return (
+              <tr key={i} className={i%2?"bg-gray-50":"bg-white"}>
+                <td className="p-1.5 font-semibold" style={{color:COLORS.quintiles[i]}}>{WEALTH_QUINTILES[i]}</td>
+                <td className="p-1.5">₹{costData.income[i].toLocaleString()}</td>
+                <td className="p-1.5">₹{Math.round(base.costByQ[i].oop).toLocaleString()}</td>
+                <td className="p-1.5" style={{color: +oopPct > 10 ? "#c53030" : "#38a169"}}>{oopPct}%</td>
+                <td className="p-1.5" style={{color: base.cheRateByQ[i] > 5 ? "#c53030" : "#38a169"}}>{base.cheRateByQ[i].toFixed(1)}%</td>
+                <td className="p-1.5" style={{color: base.impoverishByQ[i] > 5 ? "#c53030" : "#38a169"}}>{base.impoverishByQ[i].toFixed(1)}%</td>
+                <td className="p-1.5">₹{Math.round(base.costByQ[i].pmjay).toLocaleString()}</td>
+              </tr>
+            );
+          })}</tbody>
+        </table>
+      </div>
+
       <div className="bg-orange-50 border border-orange-200 rounded p-3 text-xs text-orange-900">
-        <b>Cost Equity Insight:</b> OOP spending creates stark wealth-based disparities. Poorest quintile experiences highest CHE rates ({costData.cheRateByQ[0].toFixed(1)}%) and impoverishment risk ({costData.impoverishByQ[0].toFixed(1)}%). PMJAY coverage mitigates risk but gaps remain for non-scheme services.
+        <b>Financial Protection Summary:</b> Under status quo, the poorest quintile faces {base.cheRateByQ[0].toFixed(1)}% CHE rate and {base.impoverishByQ[0].toFixed(1)}% impoverishment risk — driven by high OOP share (83% per NSSO) and low insurance coverage.
+        {hasInt && int.cheRateByQ[0] < base.cheRateByQ[0] && <span> <b>{intName}</b> reduces poorest-quintile CHE to {int.cheRateByQ[0].toFixed(1)}% by preventing costly CVD events upstream.</span>}
+        {" "}AB-PMJAY covers ~40% of hospitalization costs but outpatient NCD management remains largely OOP. This is a key equity argument for investing in prevention-focused interventions.
+      </div>
+
+      <div className="bg-gray-50 border rounded p-2.5 text-xs text-gray-600">
+        <b>Methodology:</b> CVD event costs from PMJAY 2024 (MI ₹2.5L, Stroke ₹1.8L, HF ₹1.2L). OOP share by quintile from NSSO 75th Round (83% poorest → 65% richest). PMJAY eligibility modelled at 40% of hospitalizations. CHE threshold: OOP &gt;10% of annual household income. Poverty line: ₹190/day (Tendulkar). Income estimates approximate from NSSO consumption data. All costs discounted at 3% annually.
       </div>
     </div>
   );
@@ -1990,7 +2116,7 @@ export default function NCDIndiaPlatform() {
             {tab === "demo3" && <Demonstrator3Tab population={pop} years={years}/>}
             {tab === "psa" && <PSATab population={pop} intervention={curInt} years={years}/>}
             {tab === "validation" && <ValidationTab population={pop} years={years}/>}
-            {tab === "costs" && <CostsTab population={pop} years={years}/>}
+            {tab === "costs" && <CostsTab population={pop} years={years} intervention={curInt} baseRes={baseRes} intRes={intRes}/>}
           </div>
 
           <div className="mt-2 text-xs text-gray-400 text-center">
