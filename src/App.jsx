@@ -295,7 +295,7 @@ function simulateCohort(population, intervention, years, rng) {
       }
 
       // Intervention effect determination
-      let riskReduction = 1.0, additionalCost = 0;
+      let riskReduction = 1.0, additionalCost = 0, interventionTreated = false;
       if (intervention.type !== "none" && year > 0) {
         const eligible = evaluateEligibility(p, intervention);
         if (eligible) {
@@ -307,7 +307,7 @@ function simulateCohort(population, intervention, years, rng) {
             const effAdh = Math.min(1, baseAdh * (0.80 + p.wealthQ * 0.05));
             riskReduction = 1.0 - (intervention.efficacy / 100) * effAdh;
             additionalCost = intervention.costPerPerson;
-            p.onTreatment = true; // Mark as treated — removes untreated QALY penalty
+            interventionTreated = true; // Track separately — don't modify p.onTreatment (avoids cost double-count)
             treated++;
           }
         }
@@ -356,7 +356,7 @@ function simulateCohort(population, intervention, years, rng) {
         if (p.hasNeuropathy) qaly -= 0.04;
         if (p.hasNephropathy || p.ckdStage >= 3) qaly -= 0.07;
         if (p.onDialysis) qaly -= 0.21;
-        if (p.hypertensive && !p.onTreatment) qaly -= 0.03;
+        if (p.hypertensive && !p.onTreatment && !interventionTreated) qaly -= 0.03;
         qaly *= discountFactor; // Standard 3% annual discount rate
         p.qaly += qaly; totalQaly += qaly; qalyByWealth[p.wealthQ] += qaly;
       }
@@ -912,40 +912,54 @@ function HEIPHEATTab({ population, years, epsilon }) {
       <div className="grid grid-cols-2 gap-4">
         <div>
           <div className="text-xs font-semibold text-gray-600 mb-1">Health Equity Impact Plane (HEIP)</div>
-          <ResponsiveContainer width="100%" height={280}>
+          <ResponsiveContainer width="100%" height={300}>
             <ScatterChart margin={{top:20,right:20,bottom:60,left:60}}>
               <CartesianGrid strokeDasharray="3 3"/>
-              <XAxis dataKey="x" name="ΔQALYs (Health)" tick={{fontSize:9}} tickFormatter={v => Number.isInteger(v) ? v : v.toFixed(0)} label={{value:'Change in Total Health (ΔQALYs)',position:'bottom',offset:10,fontSize:10}}/>
-              <YAxis dataKey="y" name="ΔIneq" tick={{fontSize:9}} label={{value:'Change in Inequality (↑ = less unequal)',angle:-90,position:'insideLeft',fontSize:10}}/>
-              <Tooltip cursor={{strokeDasharray:'3 3'}} contentStyle={{fontSize:11}} formatter={(v,name)=> [v.toFixed(2), name]} labelFormatter={(label,pay)=>pay[0]?.name}/>
-              <ReferenceLine x={0} stroke="#999" strokeDasharray="5 5"/>
-              <ReferenceLine y={0} stroke="#999" strokeDasharray="5 5"/>
+              <XAxis dataKey="x" type="number" name="ΔQALYs" tick={{fontSize:9}} tickFormatter={v => Math.round(v)} label={{value:'← Less Health  |  More Health →',position:'bottom',offset:10,fontSize:10}}/>
+              <YAxis dataKey="y" type="number" name="ΔIneq" tick={{fontSize:9}} tickFormatter={v => v.toFixed(1)} label={{value:'← More Unequal  |  Less Unequal →',angle:-90,position:'insideLeft',fontSize:10}}/>
+              <Tooltip cursor={{strokeDasharray:'3 3'}} contentStyle={{fontSize:11}} formatter={(v,name)=> [typeof v === 'number' ? v.toFixed(1) : v, name]} labelFormatter={(label,pay)=>pay?.[0]?.payload?.name || ''}/>
+              <ReferenceLine x={0} stroke="#666" strokeWidth={1.5}/>
+              <ReferenceLine y={0} stroke="#666" strokeWidth={1.5}/>
               {heipData.map((d, i) => (
                 <Scatter key={i} name={d.name} data={[d]} fill={d.fill} isAnimationActive={false}/>
               ))}
             </ScatterChart>
           </ResponsiveContainer>
-          <div className="text-xs text-gray-600 mt-2">
-            <b>Quadrants:</b> NE = Win-Win | NW = Equitable but Inefficient | SE = Efficient but Inequitable | SW = Lose-Lose
+          <div className="grid grid-cols-2 gap-2 text-xs mt-1">
+            <div className="bg-green-50 p-1.5 rounded text-center"><b>NE: Win-Win</b> (more health + less inequality)</div>
+            <div className="bg-blue-50 p-1.5 rounded text-center"><b>NW: Equitable</b> (less inequality, but less health)</div>
+            <div className="bg-yellow-50 p-1.5 rounded text-center"><b>SE: Efficient</b> (more health, but more inequality)</div>
+            <div className="bg-red-50 p-1.5 rounded text-center"><b>SW: Lose-Lose</b> (less health + more inequality)</div>
           </div>
         </div>
 
         <div>
-          <div className="text-xs font-semibold text-gray-600 mb-1">HEAT Summary (9 Measures)</div>
-          <div className="overflow-y-auto max-h-64 text-xs space-y-2">
+          <div className="text-xs font-semibold text-gray-600 mb-1">HEIP Position & HEAT Summary</div>
+          <div className="overflow-y-auto max-h-80 text-xs">
+            <table className="w-full border-collapse mb-2">
+              <thead><tr className="bg-gray-700 text-white"><th className="p-1">Intervention</th><th className="p-1">ΔHealth</th><th className="p-1">ΔInequality</th><th className="p-1">Quadrant</th></tr></thead>
+              <tbody>{data.map((d, idx) => {
+                const quad = d.deltaHealth > 0 && d.deltaInequality > 0 ? "NE (Win)" : d.deltaHealth <= 0 && d.deltaInequality > 0 ? "NW (Eq)" : d.deltaHealth > 0 && d.deltaInequality <= 0 ? "SE (Eff)" : "SW (Lose)";
+                const qColor = quad.startsWith("NE") ? "#38a169" : quad.startsWith("NW") ? "#2b6cb0" : quad.startsWith("SE") ? "#d69e2e" : "#c53030";
+                return (<tr key={idx} className={idx%2?"bg-gray-50":"bg-white"}>
+                  <td className="p-1 font-medium" style={{fontSize:'10px'}}>{d.name}</td>
+                  <td className="p-1 text-right">{Math.round(d.deltaHealth)}</td>
+                  <td className="p-1 text-right">{d.deltaInequality.toFixed(2)}</td>
+                  <td className="p-1 text-center font-bold" style={{color:qColor}}>{quad}</td>
+                </tr>);
+              })}</tbody>
+            </table>
+            <div className="text-xs font-semibold text-gray-600 mb-1 mt-2">9 HEAT Equity Measures</div>
             {data.map((d, idx) => (
-              <div key={idx} className="bg-gray-50 p-2 rounded border border-gray-200">
-                <div className="font-semibold text-gray-700">{d.name}</div>
-                <div className="grid grid-cols-2 gap-1 text-xs mt-1">
-                  <div>D: {d.heat.difference?.[2]?.toFixed(2)}</div>
-                  <div>R: {d.heat.ratio?.[2]?.toFixed(2)}</div>
-                  <div>PAR: {d.heat.par?.[2]?.toFixed(0)}</div>
-                  <div>PAF: {d.heat.paf?.[2]?.toFixed(3)}</div>
+              <div key={idx} className="bg-gray-50 p-1.5 rounded border border-gray-200 mb-1">
+                <div className="font-semibold text-gray-700" style={{fontSize:'10px'}}>{d.name}</div>
+                <div className="grid grid-cols-3 gap-1 text-xs mt-0.5">
                   <div>SII: {d.heat.sii?.toFixed(2)}</div>
                   <div>RII: {d.heat.rii?.toFixed(3)}</div>
                   <div>CI: {d.heat.ci?.toFixed(3)}</div>
                   <div>AT: {d.heat.atkinson?.toFixed(3)}</div>
                   <div>TH: {d.heat.theil?.toFixed(4)}</div>
+                  <div>PAR(Q3): {d.heat.par?.[2]?.toFixed(0)}</div>
                 </div>
               </div>
             ))}
@@ -1294,11 +1308,12 @@ function StateTab({ intervention, years, popSize }) {
 // --- TAB: DEMONSTRATOR 2 - DIABETES TREATMENT ESCALATION ---
 
 function Demonstrator2Tab({ population, years }) {
+  // Costs reflect Indian generic pricing; efficacy includes CVD + microvascular benefit
   const strategies = [
-    { name: "Metformin Monotherapy", coverage: 60, efficacy: 18, cost: 2400 },
-    { name: "Early SGLT2i Addition", coverage: 50, efficacy: 32, cost: 18000 },
-    { name: "Intensive STENO-2 Approach", coverage: 40, efficacy: 42, cost: 28000 },
-    { name: "Custom Strategy", coverage: 55, efficacy: 28, cost: 12000 },
+    { name: "Metformin Monotherapy", coverage: 70, efficacy: 20, adherence: 68, cost: 1500 },
+    { name: "Early SGLT2i Addition", coverage: 50, efficacy: 35, adherence: 55, cost: 8400 },
+    { name: "Intensive STENO-2 Approach", coverage: 40, efficacy: 45, adherence: 50, cost: 16000 },
+    { name: "CHW-Led DM at HWC", coverage: 65, efficacy: 24, adherence: 72, cost: 2400 },
   ];
 
   const data = useMemo(() => {
@@ -1313,6 +1328,7 @@ function Demonstrator2Tab({ population, years }) {
         type: `demo2_${idx}`,
         coverage: strat.coverage,
         efficacy: strat.efficacy,
+        adherence: strat.adherence,
         costPerPerson: strat.cost,
       };
       const rng = seededRandom(42); // Same seed as baseline for CRN
@@ -1351,7 +1367,7 @@ function Demonstrator2Tab({ population, years }) {
   return (
     <div className="space-y-4">
       <div className="text-sm font-semibold text-gray-700">Demonstrator 2: Diabetes Treatment Escalation Strategies</div>
-      <div className="text-xs text-gray-600 mb-2">Compare 4 strategies for diabetes management: monotherapy, early SGLT2i, intensive STENO-2, and custom approach</div>
+      <div className="text-xs text-gray-600 mb-2">Compare 4 strategies for diabetes management: monotherapy, early SGLT2i, intensive STENO-2, and CHW-led HWC approach</div>
 
       <div className="grid grid-cols-4 gap-2">
         {data.map((d, i) => (
@@ -1398,7 +1414,7 @@ function Demonstrator2Tab({ population, years }) {
       </div>
 
       <div className="bg-blue-50 border border-blue-200 rounded p-3 text-xs text-blue-900">
-        <b>Diabetes Equity-Efficiency Trade-off:</b> Early SGLT2i addition improves cardio-renal outcomes (efficacy 32%) but has higher cost (₹18k) and lower coverage (50%) than monotherapy. STENO-2 intensive approach maximizes efficacy but at highest cost (₹28k). At ε≥1.5 (equity priority), the strategy recommendation may shift toward broader-reach, lower-cost approaches.
+        <b>Diabetes Equity-Efficiency Trade-off:</b> Metformin monotherapy (₹1.5K/yr, 70% coverage) and CHW-led HWC (₹2.4K/yr, 65% coverage) are cost-effective at Indian WTP thanks to low cost and broad reach. SGLT2i addition (₹8.4K, generic) maximizes cardio-renal outcomes but cost-effectiveness depends on population size and WTP threshold. Intensive STENO-2 (₹16K) is most effective per patient but too costly for population-level CE. At ε≥1.5, the recommendation shifts further toward broad-reach, low-cost strategies.
       </div>
     </div>
   );
