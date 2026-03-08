@@ -145,8 +145,15 @@ function seededRandom(seed) {
 }
 
 function normalRandom(rng, mean, sd) {
-  const u1 = rng(), u2 = rng();
-  return mean + sd * Math.sqrt(-2 * Math.log(u1 + 0.0001)) * Math.cos(2 * Math.PI * u2);
+  // Box-Muller transform with guards against edge cases
+  let u1 = rng(), u2 = rng();
+  // Clamp u1 away from 0 and 1 to prevent log(0) → -Inf → NaN
+  u1 = Math.max(0.001, Math.min(0.999, u1));
+  u2 = Math.max(0.001, Math.min(0.999, u2));
+  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  const val = mean + sd * z;
+  // Final NaN/Inf guard
+  return isFinite(val) ? val : mean;
 }
 
 // --- DIABETES & CKD DISEASE MODULES ---
@@ -163,7 +170,7 @@ function initializeDiseaseState(person, rng) {
 
   // CKD initialization (GFR-based stages)
   const baseGFR = NFHS_PARAMS.mean_gfr[person.wealthQ];
-  person.gfr = normalRandom(rng, baseGFR, 12);
+  person.gfr = Math.max(5, Math.min(140, normalRandom(rng, baseGFR, 12)));
   person.ckdStage = person.gfr >= 60 ? 1 : person.gfr >= 45 ? 2 : person.gfr >= 30 ? 3 : person.gfr >= 15 ? 4 : 5;
   person.esrd = person.ckdStage === 5;
   person.onDialysis = person.esrd && (person.urban || rng() < 0.3); // Urban-rural divide
@@ -204,7 +211,13 @@ function generatePopulation(n, stateOrDistrict, rng, isDistrict = false) {
     cvdRisk10yr *= cvdMortRef / 200;
     cvdRisk10yr = Math.max(0.005, Math.min(0.65, cvdRisk10yr));
 
-    const person = { id: i, age, sex, wealthQ: wealthIdx, caste: casteIdx, urban, sbp: Math.round(sbp), chol: Math.round(chol), bmi: parseFloat(bmi.toFixed(1)), glucose: Math.round(glucose), tobacco, hypertensive, diabetic, onTreatment, cvdRisk10yr: parseFloat(cvdRisk10yr.toFixed(4)), alive: true, hadEvent: false, eventType: null, eventYear: null, qaly: 0, cost: 0, oopCost: 0, publicCost: 0, privateCost: 0, pmjayCost: 0 };
+    // Clamp all continuous variables to physiologically valid ranges
+    const sbpC = Math.max(80, Math.min(220, Math.round(sbp)));
+    const cholC = Math.max(100, Math.min(400, Math.round(chol)));
+    const bmiC = Math.max(14, Math.min(50, parseFloat(bmi.toFixed(1))));
+    const glucC = Math.max(50, Math.min(400, Math.round(glucose)));
+
+    const person = { id: i, age, sex, wealthQ: wealthIdx, caste: casteIdx, urban, sbp: sbpC, chol: cholC, bmi: bmiC, glucose: glucC, tobacco, hypertensive, diabetic, onTreatment, cvdRisk10yr: parseFloat(cvdRisk10yr.toFixed(4)), alive: true, hadEvent: false, eventType: null, eventYear: null, qaly: 0, cost: 0, oopCost: 0, publicCost: 0, privateCost: 0, pmjayCost: 0 };
 
     initializeDiseaseState(person, rng);
     pop.push(person);
@@ -227,104 +240,125 @@ function simulateCohort(population, intervention, years, rng) {
   const results = [];
   const pop = population.map(p => ({...p}));
   let treatedCount = 0;
+  const N = pop.length;
+
+  // Pre-generate common random numbers for each person × year
+  // This ensures identical "fate" draws across baseline and intervention arms
+  // (common random numbers variance reduction technique)
+  const fate = new Array(N);
+  for (let i = 0; i < N; i++) {
+    fate[i] = new Array(years + 1);
+    for (let y = 0; y <= years; y++) {
+      fate[i][y] = {
+        eventDraw: rng(), eventType1: rng(), eventType2: rng(),
+        fatalDraw: rng(), bgDeathDraw: rng(), pmjayDraw: rng(), covDraw: rng(),
+        sbpD: normalRandom(rng, 0.5, 1), glucD: normalRandom(rng, 0.3, 0.8),
+        dialD: rng(), retD: rng(), neurD: rng(), nephD: rng(),
+        hba1cD: normalRandom(rng, -0.1, 0.3),
+      };
+    }
+  }
 
   for (let year = 0; year <= years; year++) {
     let alive = 0, events = 0, deaths = 0, totalQaly = 0, totalCost = 0, treated = 0;
     const eventsByWealth = [0,0,0,0,0], deathsByWealth = [0,0,0,0,0];
     const qalyByWealth = [0,0,0,0,0], costByWealth = [0,0,0,0,0], aliveByWealth = [0,0,0,0,0];
 
-    for (const p of pop) {
+    for (let pi = 0; pi < N; pi++) {
+      const p = pop[pi];
+      const f = fate[pi][year];
       if (!p.alive) continue;
       alive++;
       aliveByWealth[p.wealthQ]++;
 
       if (year > 0) {
         p.age++;
-        p.sbp += normalRandom(rng, 0.5, 1);
-        p.glucose += normalRandom(rng, 0.3, 0.8);
+        p.sbp += f.sbpD;
+        p.glucose += f.glucD;
 
         // CKD progression
         if (p.diabetic) {
           p.gfr += p.gfrDeclinePerYear;
           p.ckdStage = p.gfr >= 60 ? 1 : p.gfr >= 45 ? 2 : p.gfr >= 30 ? 3 : p.gfr >= 15 ? 4 : 5;
           p.esrd = p.ckdStage === 5;
-          p.onDialysis = p.esrd && (p.urban || rng() < 0.3);
+          p.onDialysis = p.esrd && (p.urban || f.dialD < 0.3);
         }
 
         // Diabetes progression
         if (p.diabetic) {
           p.diabeticYears++;
-          p.hba1c = Math.max(5.2, p.hba1c + normalRandom(rng, -0.1, 0.3));
-          if (p.diabeticYears > 5 && !p.hasRetinopathy && rng() < 0.02) p.hasRetinopathy = true;
-          if (p.diabeticYears > 7 && !p.hasNeuropathy && rng() < 0.025) p.hasNeuropathy = true;
-          if (p.diabeticYears > 10 && !p.hasNephropathy && rng() < 0.015) p.hasNephropathy = true;
+          p.hba1c = Math.max(5.2, p.hba1c + f.hba1cD);
+          if (p.diabeticYears > 5 && !p.hasRetinopathy && f.retD < 0.02) p.hasRetinopathy = true;
+          if (p.diabeticYears > 7 && !p.hasNeuropathy && f.neurD < 0.025) p.hasNeuropathy = true;
+          if (p.diabeticYears > 10 && !p.hasNephropathy && f.nephD < 0.015) p.hasNephropathy = true;
         }
       }
 
+      // Intervention effect determination
       let riskReduction = 1.0, additionalCost = 0;
       if (intervention.type !== "none" && year > 0) {
         const eligible = evaluateEligibility(p, intervention);
         if (eligible) {
           const baseCov = intervention.coverage / 100;
-          const covMult = p.urban ? 1.2 : 0.7;
-          const wAdj = 0.6 + p.wealthQ * 0.15;
-          const effCov = Math.min(1, baseCov * covMult * wAdj);
-          if (rng() < effCov) {
+          const covMult = p.urban ? 1.1 : 0.85;
+          const effCov = Math.min(1, baseCov * covMult);
+          if (f.covDraw < effCov) {
             const baseAdh = intervention.adherence / 100;
-            const effAdh = Math.min(1, baseAdh * (0.5 + p.wealthQ * 0.15));
+            const effAdh = Math.min(1, baseAdh * (0.80 + p.wealthQ * 0.05));
             riskReduction = 1.0 - (intervention.efficacy / 100) * effAdh;
-            additionalCost = intervention.costPerPerson * NFHS_PARAMS.cost_multiplier[p.wealthQ];
+            additionalCost = intervention.costPerPerson;
             treated++;
           }
         }
       }
 
+      // CVD event risk
       let annualRisk = 1 - Math.pow(1 - p.cvdRisk10yr, 0.1);
       annualRisk *= riskReduction;
+      if (p.diabetic) annualRisk *= 2.0;
+      annualRisk *= getCKDRiskMultiplier(p.ckdStage);
+      if (p.hadEvent) annualRisk *= 2.0;
 
-      // Cross-disease interactions
-      if (p.diabetic) annualRisk *= 2.0; // Diabetes multiplies CVD risk
-      annualRisk *= getCKDRiskMultiplier(p.ckdStage); // CKD multiplies CVD risk
+      // Background mortality (SRS-calibrated)
+      const bgMort = 0.003 + Math.pow((p.age - 30), 1.5) * 0.00004;
 
-      if (p.hadEvent) annualRisk *= 2.5;
-      const bgMort = 0.005 + (p.age - 30) * 0.0008;
-
-      if (!p.hadEvent && rng() < annualRisk) {
+      // Event and death determination using common random numbers
+      if (!p.hadEvent && f.eventDraw < annualRisk) {
         p.hadEvent = true;
-        p.eventType = rng() < 0.55 ? "MI" : rng() < 0.8 ? "Stroke" : "HF";
+        p.eventType = f.eventType1 < 0.55 ? "MI" : f.eventType2 < 0.65 ? "Stroke" : "HF";
         p.eventYear = year;
         events++;
         eventsByWealth[p.wealthQ]++;
-        // Updated event costs (PMJAY rates 2024): MI ₹2.5L, Stroke ₹1.8L, HF ₹1.2L
         const eCost = p.eventType === "MI" ? 250000 : p.eventType === "Stroke" ? 180000 : 120000;
         const totalEventCost = eCost * NFHS_PARAMS.cost_multiplier[p.wealthQ];
         const oopShare = NFHS_PARAMS.oop_spending_pct[p.wealthQ];
-        const pmjayShare = rng() < 0.4 ? 0.6 : 0;
+        const pmjayShare = f.pmjayDraw < 0.4 ? 0.6 : 0;
         p.oopCost += totalEventCost * (oopShare - pmjayShare);
         p.pmjayCost += totalEventCost * pmjayShare;
         p.publicCost += totalEventCost * (1 - oopShare - pmjayShare);
         p.cost += totalEventCost;
 
-        if (rng() < (p.eventType === "MI" ? 0.12 : p.eventType === "Stroke" ? 0.18 : 0.08)) {
+        if (f.fatalDraw < (p.eventType === "MI" ? 0.12 : p.eventType === "Stroke" ? 0.18 : 0.08)) {
           p.alive = false; deaths++; deathsByWealth[p.wealthQ]++;
         }
-      } else if (rng() < bgMort) {
+      } else if (f.bgDeathDraw < bgMort) {
         p.alive = false; deaths++; deathsByWealth[p.wealthQ]++;
       }
 
+      // QALY (GBD 2021 disability weights)
       if (p.alive) {
         let qaly = 1.0;
-        if (p.hadEvent) qaly -= (p.eventType === "Stroke" ? 0.32 : 0.15); // GBD stroke 0.316
+        if (p.hadEvent) qaly -= (p.eventType === "Stroke" ? 0.32 : 0.15);
         if (p.diabetic) qaly -= 0.04;
         if (p.hasRetinopathy) qaly -= 0.06;
         if (p.hasNeuropathy) qaly -= 0.04;
         if (p.hasNephropathy || p.ckdStage >= 3) qaly -= 0.07;
-        if (p.onDialysis) qaly -= 0.21; // GBD ESRD on dialysis
+        if (p.onDialysis) qaly -= 0.21;
         if (p.hypertensive && !p.onTreatment) qaly -= 0.03;
         p.qaly += qaly; totalQaly += qaly; qalyByWealth[p.wealthQ] += qaly;
       }
 
-      // Updated annual treatment cost: ₹2400 for those on treatment; post-event ₹18000; dialysis ₹316000/yr
+      // Annual costs
       const annCost = (p.onTreatment ? 2400 : 0) + (p.hadEvent && p.alive ? 18000 : 0) + additionalCost + (p.onDialysis ? 316000 : 0);
       p.cost += annCost; totalCost += annCost; costByWealth[p.wealthQ] += annCost;
     }
@@ -677,7 +711,9 @@ function PopulationTab({ population }) {
     if (!population.length) return null;
     return Array(5).fill(null).map((_, q) => {
       const g = population.filter(p => p.wealthQ === q);
-      return { quintile: WEALTH_QUINTILES[q], n: g.length, meanAge: (g.reduce((s, p) => s + p.age, 0) / g.length).toFixed(1), meanSBP: (g.reduce((s, p) => s + p.sbp, 0) / g.length).toFixed(0), htPrev: ((g.filter(p => p.hypertensive).length / g.length) * 100).toFixed(1), txAccess: ((g.filter(p => p.onTreatment).length / Math.max(1, g.filter(p => p.hypertensive).length)) * 100).toFixed(1), dmPrev: ((g.filter(p => p.diabetic).length / g.length) * 100).toFixed(1), tobPrev: ((g.filter(p => p.tobacco).length / g.length) * 100).toFixed(1), meanRisk: ((g.reduce((s, p) => s + p.cvdRisk10yr, 0) / g.length) * 100).toFixed(1) };
+      const n = g.length || 1; // guard against division by zero
+      const safe = (arr, fn) => { const vals = arr.filter(p => isFinite(fn(p))); return vals.length ? vals.reduce((s, p) => s + fn(p), 0) / vals.length : 0; };
+      return { quintile: WEALTH_QUINTILES[q], n: g.length, meanAge: safe(g, p => p.age).toFixed(1), meanSBP: safe(g, p => p.sbp).toFixed(0), htPrev: ((g.filter(p => p.hypertensive).length / n) * 100).toFixed(1), txAccess: ((g.filter(p => p.onTreatment).length / Math.max(1, g.filter(p => p.hypertensive).length)) * 100).toFixed(1), dmPrev: ((g.filter(p => p.diabetic).length / n) * 100).toFixed(1), tobPrev: ((g.filter(p => p.tobacco).length / n) * 100).toFixed(1), meanRisk: (safe(g, p => p.cvdRisk10yr) * 100).toFixed(1) };
     });
   }, [population]);
 
@@ -1197,7 +1233,7 @@ function StateTab({ intervention, years, popSize }) {
     if (!intervention || intervention.type === "none") return [];
     return Object.entries(STATES).map(([name, params]) => {
       const rng = seededRandom(name.length * 1000);
-      const pop = generatePopulation(Math.floor(popSize / 3), name, rng);
+      const pop = generatePopulation(Math.min(Math.floor(popSize / 3), 50000), name, rng);
       const rngB = seededRandom(name.length * 2000);
       const base = simulateCohort(pop.map(p=>({...p})), INTERVENTIONS.none, years, rngB);
       const rngI = seededRandom(name.length * 3000);
@@ -1802,7 +1838,7 @@ export default function NCDIndiaPlatform() {
   const [tab, setTab] = useState("guide");
   const [state, setState] = useState("Madhya Pradesh");
   const [district, setDistrict] = useState("Indore");
-  const [popSize, setPopSize] = useState(5000);
+  const [popSize, setPopSize] = useState(50000);
   const [years, setYears] = useState(20);
   const [epsilon, setEpsilon] = useState(1.0);
   const [selInt, setSelInt] = useState("ihci");
@@ -1824,10 +1860,12 @@ export default function NCDIndiaPlatform() {
       const rng = seededRandom(12345);
       const p = generatePopulation(popSize, state, rng);
       setPop(p);
+      // Use SAME seed for both arms so identical random events happen to matched individuals
+      // Difference in outcomes is purely due to intervention effect (common random numbers technique)
       const rB = seededRandom(42);
       const b = simulateCohort(p.map(x=>({...x})), INTERVENTIONS.none, years, rB);
       setBaseRes(b);
-      const rI = seededRandom(99);
+      const rI = seededRandom(42); // Same seed as baseline for paired comparison
       const ir = simulateCohort(p.map(x=>({...x})), curInt, years, rI);
       setIntRes(ir);
       setDcea(computeDCEA(b, ir, getEquityWeights(epsilon)));
@@ -1882,8 +1920,9 @@ export default function NCDIndiaPlatform() {
             <select value={district} onChange={e => setDistrict(e.target.value)} className="w-full border rounded px-2 py-1 text-xs">{Object.keys(DISTRICTS).map(d => <option key={d}>{d}</option>)}</select>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-0.5">Population: {popSize.toLocaleString()}</label>
-            <input type="range" min="1000" max="20000" step="1000" value={popSize} onChange={e => setPopSize(+e.target.value)} className="w-full"/>
+            <label className="block text-xs text-gray-500 mb-0.5">Sample Size: {popSize >= 100000 ? (popSize/100000).toFixed(1) + "L" : popSize.toLocaleString()} adults (30-69yr)</label>
+            <input type="range" min="10000" max="750000" step="10000" value={popSize} onChange={e => setPopSize(+e.target.value)} className="w-full"/>
+            <div className="text-xs text-gray-400">Avg district: 5-7.5L adults</div>
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-0.5">Horizon: {years}yr</label>
@@ -1925,9 +1964,10 @@ export default function NCDIndiaPlatform() {
           </div>
 
           <button onClick={run} disabled={running} className="w-full bg-blue-800 text-white py-2 rounded text-xs font-semibold hover:bg-blue-900 disabled:opacity-50 transition-colors">
-            {running ? "Running..." : "Run NCD-India Simulation"}
+            {running ? `Simulating ${popSize >= 100000 ? (popSize/100000).toFixed(1)+"L" : popSize.toLocaleString()} individuals...` : "Run NCD-India Simulation"}
           </button>
-          {done && <div className="text-xs text-green-600 text-center">Done ({popSize.toLocaleString()} individuals, {years}yr)</div>}
+          {popSize > 200000 && <div className="text-xs text-amber-600 text-center">Large sample — may take 10-30 seconds</div>}
+          {done && <div className="text-xs text-green-600 text-center">Done ({popSize >= 100000 ? (popSize/100000).toFixed(1) + "L" : popSize.toLocaleString()} adults simulated, {years}yr horizon)</div>}
         </div>
 
         <div className="flex-1 p-3 overflow-x-hidden">
