@@ -1973,6 +1973,422 @@ function CostsTab({ population, years, intervention, baseRes, intRes }) {
 }
 
 // ============================================================
+// DISEASE MODELS TAB — Conceptual Diagrams for Future Analyses
+// ============================================================
+
+function DiseaseModelsTab() {
+  const [selectedModel, setSelectedModel] = useState("cvd");
+
+  const boxStyle = (color) => ({
+    display: 'inline-block', padding: '8px 14px', borderRadius: '8px',
+    border: `2px solid ${color}`, backgroundColor: `${color}15`,
+    fontSize: '11px', fontWeight: 600, textAlign: 'center', minWidth: '100px'
+  });
+
+  const arrowDown = (label, color = '#6B7280') => (
+    <div style={{textAlign:'center', padding:'2px 0', color, fontSize:'10px'}}>
+      <div style={{fontSize:'16px'}}>↓</div>
+      {label && <div>{label}</div>}
+    </div>
+  );
+
+  const arrowRight = (label, color = '#6B7280') => (
+    <span style={{display:'inline-flex', alignItems:'center', padding:'0 6px', color, fontSize:'10px'}}>
+      <span style={{fontSize:'14px'}}>→</span>{label && <span style={{marginLeft:'3px'}}>{label}</span>}
+    </span>
+  );
+
+  const arrowBidi = (label, color = '#6B7280') => (
+    <span style={{display:'inline-flex', alignItems:'center', padding:'0 6px', color, fontSize:'10px'}}>
+      <span style={{fontSize:'14px'}}>⇄</span>{label && <span style={{marginLeft:'3px'}}>{label}</span>}
+    </span>
+  );
+
+  const sectionBox = (title, children, borderColor = '#3B82F6') => (
+    <div style={{border:`1px solid ${borderColor}30`, borderRadius:'10px', padding:'16px', marginBottom:'16px', backgroundColor:'white'}}>
+      <div style={{fontWeight:700, fontSize:'13px', color: borderColor, marginBottom:'12px', borderBottom:`2px solid ${borderColor}30`, paddingBottom:'6px'}}>{title}</div>
+      {children}
+    </div>
+  );
+
+  const models = {
+    cvd: {
+      title: "CVD Microsimulation Model",
+      subtitle: "Hypertension → CVD Events → Post-Event Care",
+      description: "Patient-level discrete-time microsimulation with annual cycles. Tracks individuals from healthy state through hypertension development, CVD events (MI, Stroke), and post-event outcomes. Incorporates wealth-stratified risk factors, treatment access gradients, and competing mortality.",
+      diagram: () => (
+        <div>
+          {sectionBox("State-Transition Diagram",
+            <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'2px'}}>
+              <div style={{display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#10B981')}>Healthy<br/><span style={{fontSize:'9px',fontWeight:400}}>No CVD risk factors</span></div>
+                {arrowRight("Risk factor onset", '#F59E0B')}
+                <div style={boxStyle('#F59E0B')}>At Risk<br/><span style={{fontSize:'9px',fontWeight:400}}>HT / DM / Tobacco / Obesity</span></div>
+                {arrowRight("Treatment", '#3B82F6')}
+                <div style={boxStyle('#3B82F6')}>On Treatment<br/><span style={{fontSize:'9px',fontWeight:400}}>BP/Statin/Lifestyle Rx</span></div>
+              </div>
+              {arrowDown("CVD Event (MI/Stroke)", '#EF4444')}
+              <div style={{display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#EF4444')}>Acute CVD Event<br/><span style={{fontSize:'9px',fontWeight:400}}>MI / Stroke / Acute phase</span></div>
+                {arrowRight("Survive", '#8B5CF6')}
+                <div style={boxStyle('#8B5CF6')}>Post-Event<br/><span style={{fontSize:'9px',fontWeight:400}}>Secondary prevention</span></div>
+                {arrowRight("Recurrence", '#EF4444')}
+                <div style={boxStyle('#DC2626')}>Recurrent CVD<br/><span style={{fontSize:'9px',fontWeight:400}}>Higher fatality risk</span></div>
+              </div>
+              {arrowDown("Fatal event / Background mortality", '#6B7280')}
+              <div style={boxStyle('#6B7280')}>Death<br/><span style={{fontSize:'9px',fontWeight:400}}>CVD or competing causes</span></div>
+            </div>
+          )}
+          {sectionBox("Key Parameters & Data Sources",
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', fontSize:'11px'}}>
+              <div><b>Transition probabilities:</b> GBD 2021, Framingham recalibrated for India (Kaptoge et al. 2019)</div>
+              <div><b>Treatment efficacy:</b> Law et al. 2009 (BP lowering), CTT (statins), SPRINT/ACCORD for targets</div>
+              <div><b>Risk factor distributions:</b> NFHS-5 wealth-stratified prevalence by age, sex, urban/rural</div>
+              <div><b>Mortality:</b> SRS India age-sex life tables + GBD CVD-specific mortality rates</div>
+              <div><b>Costs:</b> NSSO 75th Round OOP, NHA 2019-20, PMJAY package rates</div>
+              <div><b>Utilities:</b> GBD 2021 disability weights (MI: 0.432→0.074, Stroke: 0.316→0.076)</div>
+            </div>
+          )}
+          {sectionBox("Equity Dimensions Modelled",
+            <div style={{display:'flex', gap:'8px', flexWrap:'wrap'}}>
+              {["Wealth quintile (NFHS-5)", "Urban/Rural residence", "Sex (M/F)", "Caste (SC/ST/OBC/General)", "Education level", "Insurance status (PMJAY)"].map(d =>
+                <span key={d} style={{padding:'4px 10px', borderRadius:'20px', backgroundColor:'#EFF6FF', border:'1px solid #BFDBFE', fontSize:'10px'}}>{d}</span>
+              )}
+            </div>
+          )}
+        </div>
+      )
+    },
+    diabetes: {
+      title: "Diabetes & CKD Progression Model",
+      subtitle: "Diabetes → Microvascular Complications → CKD → Dialysis/Transplant",
+      description: "Tracks diabetes natural history including glycemic control trajectory, microvascular complications (retinopathy, neuropathy, nephropathy), CKD progression through stages 1-5, and renal replacement therapy. Linked to CVD model via shared risk factors.",
+      diagram: () => (
+        <div>
+          {sectionBox("State-Transition Diagram",
+            <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'2px'}}>
+              <div style={{display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#10B981')}>Normal Glucose<br/><span style={{fontSize:'9px',fontWeight:400}}>HbA1c &lt; 5.7%</span></div>
+                {arrowRight("Progression", '#F59E0B')}
+                <div style={boxStyle('#F59E0B')}>Pre-Diabetes<br/><span style={{fontSize:'9px',fontWeight:400}}>HbA1c 5.7-6.4%</span></div>
+                {arrowRight("Conversion", '#EF4444')}
+                <div style={boxStyle('#EF4444')}>T2 Diabetes<br/><span style={{fontSize:'9px',fontWeight:400}}>HbA1c ≥ 6.5%</span></div>
+              </div>
+              {arrowDown("Complication development", '#8B5CF6')}
+              <div style={{display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#8B5CF6')}>Retinopathy<br/><span style={{fontSize:'9px',fontWeight:400}}>NPDR → PDR → Vision loss</span></div>
+                <div style={boxStyle('#8B5CF6')}>Neuropathy<br/><span style={{fontSize:'9px',fontWeight:400}}>Peripheral → Foot ulcer</span></div>
+                <div style={boxStyle('#A855F7')}>Nephropathy<br/><span style={{fontSize:'9px',fontWeight:400}}>CKD Stage 1-5</span></div>
+              </div>
+              {arrowDown("CKD Progression", '#DC2626')}
+              <div style={{display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#F97316')}>CKD Stage 3<br/><span style={{fontSize:'9px',fontWeight:400}}>eGFR 30-59</span></div>
+                {arrowRight("", '#DC2626')}
+                <div style={boxStyle('#DC2626')}>CKD Stage 4-5<br/><span style={{fontSize:'9px',fontWeight:400}}>eGFR &lt; 30</span></div>
+                {arrowRight("RRT", '#991B1B')}
+                <div style={boxStyle('#991B1B')}>Dialysis / Transplant<br/><span style={{fontSize:'9px',fontWeight:400}}>ESRD management</span></div>
+              </div>
+              {arrowDown("", '#6B7280')}
+              <div style={boxStyle('#6B7280')}>Death<br/><span style={{fontSize:'9px',fontWeight:400}}>DM/CKD/CVD or competing</span></div>
+            </div>
+          )}
+          {sectionBox("Key Parameters & Data Sources",
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', fontSize:'11px'}}>
+              <div><b>Incidence:</b> ICMR-INDIAB study (Anjana et al. 2023), conversion rates from NFHS-5</div>
+              <div><b>Complication rates:</b> UKPDS-OM2 recalibrated, Indian CKD registry (CKDNI)</div>
+              <div><b>HbA1c trajectories:</b> UKPDS-68 adapted, Indian glycemic drift (Sosale et al. 2016)</div>
+              <div><b>CKD progression:</b> KDIGO 2024, Indian eGFR equations (Jessani et al. 2014)</div>
+              <div><b>Treatment costs:</b> NPCDCS generic prices, PMJAY dialysis packages (₹3.16L/yr)</div>
+              <div><b>DW:</b> GBD 2021 — DM uncomplicated 0.049, neuropathy 0.133, dialysis 0.571</div>
+            </div>
+          )}
+        </div>
+      )
+    },
+    tobacco: {
+      title: "Tobacco & Cancer Model",
+      subtitle: "Tobacco Use → Cessation/Continuation → Cancer → Treatment/Death",
+      description: "Models tobacco use dynamics (initiation, cessation, relapse) and long-term consequences including oral, lung, and oesophageal cancers. Captures India-specific patterns: high smokeless tobacco (gutkha/khaini) prevalence especially in poorest quintiles. Links to CVD model via BP and atherosclerosis pathways.",
+      diagram: () => (
+        <div>
+          {sectionBox("State-Transition Diagram",
+            <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'2px'}}>
+              <div style={{display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#10B981')}>Never User<br/><span style={{fontSize:'9px',fontWeight:400}}>No tobacco exposure</span></div>
+                {arrowRight("Initiation", '#F59E0B')}
+                <div style={boxStyle('#F59E0B')}>Current Smoker<br/><span style={{fontSize:'9px',fontWeight:400}}>Bidi / Cigarette</span></div>
+                <div style={boxStyle('#F97316')}>SLT User<br/><span style={{fontSize:'9px',fontWeight:400}}>Gutkha / Khaini / Pan</span></div>
+              </div>
+              <div style={{display:'flex', alignItems:'center', gap:'6px', justifyContent:'center'}}>
+                {arrowDown("Cessation ↕ Relapse", '#3B82F6')}
+              </div>
+              <div style={{display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#3B82F6')}>Former User<br/><span style={{fontSize:'9px',fontWeight:400}}>Declining risk over 10yr</span></div>
+                {arrowRight("Tax/Policy effect", '#10B981')}
+                <div style={boxStyle('#10B981')}>Sustained Quitter<br/><span style={{fontSize:'9px',fontWeight:400}}>Near-baseline risk at 15yr</span></div>
+              </div>
+              {arrowDown("Cancer development (10-30yr lag)", '#EF4444')}
+              <div style={{display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#EF4444')}>Oral Cancer<br/><span style={{fontSize:'9px',fontWeight:400}}>SLT-predominant</span></div>
+                <div style={boxStyle('#EF4444')}>Lung Cancer<br/><span style={{fontSize:'9px',fontWeight:400}}>Smoking-predominant</span></div>
+                <div style={boxStyle('#EF4444')}>Other Cancers<br/><span style={{fontSize:'9px',fontWeight:400}}>Oesophagus / Larynx</span></div>
+              </div>
+              {arrowDown("Stage at diagnosis → Treatment", '#6B7280')}
+              <div style={{display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#8B5CF6')}>Cancer Treatment<br/><span style={{fontSize:'9px',fontWeight:400}}>Surgery / Chemo / Radiation</span></div>
+                {arrowRight("", '#6B7280')}
+                <div style={boxStyle('#6B7280')}>Death<br/><span style={{fontSize:'9px',fontWeight:400}}>Cancer / CVD / Competing</span></div>
+              </div>
+            </div>
+          )}
+          {sectionBox("Key Parameters & Data Sources",
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', fontSize:'11px'}}>
+              <div><b>Prevalence:</b> GATS-2 India 2016-17 (28.6% overall; 42.4% men, 14.2% women)</div>
+              <div><b>Cancer risk:</b> IARC monographs, Indian PBCR data (NCRP 2020), SLT-specific ORs</div>
+              <div><b>Cessation rates:</b> GATS-2 quit ratios, price elasticity −0.4 to −0.8 for bidis</div>
+              <div><b>Tax policy effect:</b> WHO FCTC Art.6, Jha & Peto 2014, Indian GST+cess structure</div>
+              <div><b>Treatment costs:</b> Tata Memorial Hospital rates, PMJAY oncology packages</div>
+              <div><b>DW:</b> GBD 2021 — Oral Ca 0.274-0.508, Lung Ca 0.288-0.519 by stage</div>
+            </div>
+          )}
+        </div>
+      )
+    },
+    crossdisease: {
+      title: "Cross-Disease Interaction Framework",
+      subtitle: "How CVD, Diabetes, CKD & Tobacco Models Interact",
+      description: "NCD-India's unique value is modelling cross-disease interactions that are typically ignored in siloed models. Hypertension accelerates diabetic nephropathy; diabetes doubles CVD risk; tobacco raises both cancer and CVD risk; CKD increases CVD mortality 3-fold. This framework captures synergistic effects and shared interventions.",
+      diagram: () => (
+        <div>
+          {sectionBox("Cross-Disease Interaction Map",
+            <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'6px'}}>
+              <div style={{display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={{...boxStyle('#EF4444'), minWidth:'140px'}}>Hypertension<br/><span style={{fontSize:'9px',fontWeight:400}}>BP ≥ 140/90 mmHg</span></div>
+                {arrowBidi("×2 CVD risk", '#DC2626')}
+                <div style={{...boxStyle('#3B82F6'), minWidth:'140px'}}>CVD Events<br/><span style={{fontSize:'9px',fontWeight:400}}>MI / Stroke / HF</span></div>
+                {arrowBidi("×3 mortality", '#6B21A8')}
+                <div style={{...boxStyle('#8B5CF6'), minWidth:'140px'}}>CKD<br/><span style={{fontSize:'9px',fontWeight:400}}>eGFR decline</span></div>
+              </div>
+              <div style={{display:'flex', gap:'40px', justifyContent:'center'}}>
+                <div style={{textAlign:'center', color:'#DC2626', fontSize:'10px'}}>↕<br/>Accelerates nephropathy</div>
+                <div style={{textAlign:'center', color:'#F59E0B', fontSize:'10px'}}>↕<br/>Shared risk factors</div>
+                <div style={{textAlign:'center', color:'#8B5CF6', fontSize:'10px'}}>↕<br/>Uremic cardiomyopathy</div>
+              </div>
+              <div style={{display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={{...boxStyle('#F59E0B'), minWidth:'140px'}}>T2 Diabetes<br/><span style={{fontSize:'9px',fontWeight:400}}>HbA1c, insulin resistance</span></div>
+                {arrowBidi("↑ atherosclerosis", '#F97316')}
+                <div style={{...boxStyle('#F97316'), minWidth:'140px'}}>Tobacco Use<br/><span style={{fontSize:'9px',fontWeight:400}}>Smoking + SLT</span></div>
+                {arrowRight("Cancer risk", '#DC2626')}
+                <div style={{...boxStyle('#DC2626'), minWidth:'140px'}}>Cancers<br/><span style={{fontSize:'9px',fontWeight:400}}>Oral / Lung / Other</span></div>
+              </div>
+            </div>
+          )}
+          {sectionBox("Shared Intervention Pathways",
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', fontSize:'11px'}}>
+              <div style={{padding:'10px', backgroundColor:'#F0FDF4', borderRadius:'8px', border:'1px solid #BBF7D0'}}>
+                <div style={{fontWeight:700, color:'#166534', marginBottom:'4px'}}>Population-Level</div>
+                <div>Salt reduction → BP ↓ → CVD ↓, CKD ↓</div>
+                <div>Tobacco tax → Cessation ↑ → CVD ↓, Cancer ↓</div>
+                <div>WHO Best Buys → Multi-NCD benefit</div>
+              </div>
+              <div style={{padding:'10px', backgroundColor:'#EFF6FF', borderRadius:'8px', border:'1px solid #BFDBFE'}}>
+                <div style={{fontWeight:700, color:'#1E40AF', marginBottom:'4px'}}>Clinical (Primary Care)</div>
+                <div>IHCI Protocol → HT+DM control → CVD ↓</div>
+                <div>CHW-led HWC → Coverage ↑ across NCDs</div>
+                <div>Polypill → Multi-risk factor reduction</div>
+              </div>
+              <div style={{padding:'10px', backgroundColor:'#FDF4FF', borderRadius:'8px', border:'1px solid #E9D5FF'}}>
+                <div style={{fontWeight:700, color:'#6B21A8', marginBottom:'4px'}}>Health System</div>
+                <div>PMJAY → Catastrophic cost protection</div>
+                <div>NCD Kit at HWC → Screening access ↑</div>
+                <div>Telemedicine (mHealth) → Rural reach ↑</div>
+              </div>
+            </div>
+          )}
+          {sectionBox("Multiplier Effects Captured in Platform",
+            <div style={{fontSize:'11px'}}>
+              <table style={{width:'100%', borderCollapse:'collapse', fontSize:'11px'}}>
+                <thead>
+                  <tr style={{backgroundColor:'#F8FAFC'}}>
+                    <th style={{border:'1px solid #E2E8F0', padding:'6px', textAlign:'left'}}>Interaction</th>
+                    <th style={{border:'1px solid #E2E8F0', padding:'6px', textAlign:'left'}}>Effect</th>
+                    <th style={{border:'1px solid #E2E8F0', padding:'6px', textAlign:'left'}}>Source</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    ["DM → CVD", "2.0× MI risk, 1.8× Stroke risk", "Emerging Risk Factors Collab. 2010"],
+                    ["HT → CKD progression", "1.5-2.0× eGFR decline rate", "KDIGO 2024 guidelines"],
+                    ["CKD → CVD mortality", "3.0× CVD death risk at Stage 4+", "Go et al. NEJM 2004"],
+                    ["Tobacco → CVD", "1.6× MI risk (smoking), 1.3× (SLT)", "Hackshaw et al. BMJ 2018"],
+                    ["DM + HT combined", "4.0× CVD risk (synergistic)", "UKPDS, Stamler et al."],
+                    ["Salt ↓ 30% → BP ↓", "−4.2 mmHg population SBP", "He & MacGregor, Cochrane 2013"],
+                  ].map(([int, eff, src], i) => (
+                    <tr key={i} style={{backgroundColor: i%2===0 ? 'white' : '#F8FAFC'}}>
+                      <td style={{border:'1px solid #E2E8F0', padding:'5px', fontWeight:600}}>{int}</td>
+                      <td style={{border:'1px solid #E2E8F0', padding:'5px'}}>{eff}</td>
+                      <td style={{border:'1px solid #E2E8F0', padding:'5px', color:'#6B7280', fontSize:'10px'}}>{src}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )
+    },
+    dcea: {
+      title: "DCEA Analytical Framework",
+      subtitle: "Cookson/York Framework for Distributional Analysis",
+      description: "The DCEA analytical pipeline that transforms microsimulation outputs into equity-weighted policy recommendations. Implements the full Cookson et al. (2017) framework: stratified CEA → health distribution assessment → social welfare function → equity-informative decision criteria.",
+      diagram: () => (
+        <div>
+          {sectionBox("DCEA Pipeline",
+            <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'2px'}}>
+              <div style={{display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#3B82F6')}>Microsimulation<br/><span style={{fontSize:'9px',fontWeight:400}}>N = 500K patient-level</span></div>
+                {arrowRight("Stratify", '#6B7280')}
+                <div style={boxStyle('#8B5CF6')}>Equity Stratification<br/><span style={{fontSize:'9px',fontWeight:400}}>By wealth, sex, caste, location</span></div>
+                {arrowRight("Compute", '#6B7280')}
+                <div style={boxStyle('#F59E0B')}>Δ Health & Δ Cost<br/><span style={{fontSize:'9px',fontWeight:400}}>Per stratum, discounted</span></div>
+              </div>
+              {arrowDown("", '#6B7280')}
+              <div style={{display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#10B981')}>ICER / NHB<br/><span style={{fontSize:'9px',fontWeight:400}}>Standard CEA metrics</span></div>
+                {arrowRight("", '#6B7280')}
+                <div style={boxStyle('#EF4444')}>HEAT Measures<br/><span style={{fontSize:'9px',fontWeight:400}}>9 inequality indices</span></div>
+                {arrowRight("", '#6B7280')}
+                <div style={boxStyle('#DC2626')}>HEIP Quadrant<br/><span style={{fontSize:'9px',fontWeight:400}}>Efficiency × Equity</span></div>
+              </div>
+              {arrowDown("", '#6B7280')}
+              <div style={{display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#6B21A8')}>Social Welfare Function<br/><span style={{fontSize:'9px',fontWeight:400}}>Atkinson ε = 0-15</span></div>
+                {arrowRight("", '#6B7280')}
+                <div style={boxStyle('#0EA5E9')}>EDESHE<br/><span style={{fontSize:'9px',fontWeight:400}}>Equally-Distributed Equivalent</span></div>
+                {arrowRight("", '#6B7280')}
+                <div style={boxStyle('#059669')}>Policy Recommendation<br/><span style={{fontSize:'9px',fontWeight:400}}>Equity-weighted ranking</span></div>
+              </div>
+            </div>
+          )}
+          {sectionBox("HEAT — Health Equity Assessment Toolkit (9 Measures)",
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'8px', fontSize:'10px'}}>
+              {[
+                {name:"Difference (D)", desc:"Absolute gap: Q5 − Q1 health"},
+                {name:"Ratio (R)", desc:"Relative gap: Q5 / Q1 health"},
+                {name:"PAR", desc:"Population Attributable Risk vs best group"},
+                {name:"PAF", desc:"Population Attributable Fraction (%)"},
+                {name:"SII", desc:"Slope Index — regression-based absolute gradient"},
+                {name:"RII", desc:"Relative Index of Inequality — regression-based relative"},
+                {name:"CI", desc:"Concentration Index — rank-weighted inequality"},
+                {name:"Atkinson", desc:"Social welfare loss from inequality (ε-sensitive)"},
+                {name:"Theil", desc:"Entropy-based decomposable inequality index"},
+              ].map(m => (
+                <div key={m.name} style={{padding:'6px', backgroundColor:'#F8FAFC', borderRadius:'6px', border:'1px solid #E2E8F0'}}>
+                  <div style={{fontWeight:700, color:'#1E40AF'}}>{m.name}</div>
+                  <div style={{color:'#6B7280'}}>{m.desc}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {sectionBox("Key References",
+            <div style={{fontSize:'11px', color:'#4B5563', lineHeight:'1.6'}}>
+              <div>Cookson R, Mirelman AJ, Griffin S, et al. <i>Using cost-effectiveness analysis to address health equity concerns.</i> Value in Health. 2017;20(2):206-212.</div>
+              <div>Asaria M, Griffin S, Cookson R. <i>Distributional cost-effectiveness analysis: a tutorial.</i> Medical Decision Making. 2016;36(1):8-19.</div>
+              <div>Verguet S, Kim JJ, Jamison DT. <i>Extended cost-effectiveness analysis for health policy assessment.</i> Pharmacoeconomics. 2016;34(9):913-923.</div>
+              <div>WHO. <i>Health Equity Assessment Toolkit (HEAT).</i> Geneva: World Health Organization; 2023.</div>
+            </div>
+          )}
+        </div>
+      )
+    },
+    population: {
+      title: "Synthetic Population Model",
+      subtitle: "NFHS-5 Calibrated Microsimulation Cohort Generation",
+      description: "Generates representative synthetic populations calibrated to NFHS-5 (2019-21) marginal distributions. Preserves joint distributions of risk factors, demographics, and socioeconomic variables. Supports district-level, state-level, and national population synthesis.",
+      diagram: () => (
+        <div>
+          {sectionBox("Population Synthesis Pipeline",
+            <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'2px'}}>
+              <div style={{display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#3B82F6')}>NFHS-5 Data<br/><span style={{fontSize:'9px',fontWeight:400}}>~725K households, 2.4M individuals</span></div>
+                {arrowRight("Extract marginals", '#6B7280')}
+                <div style={boxStyle('#8B5CF6')}>Joint Distributions<br/><span style={{fontSize:'9px',fontWeight:400}}>Age × Sex × Wealth × Location</span></div>
+              </div>
+              {arrowDown("Iterative Proportional Fitting", '#F59E0B')}
+              <div style={{display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap', justifyContent:'center'}}>
+                <div style={boxStyle('#F59E0B')}>Assign Demographics<br/><span style={{fontSize:'9px',fontWeight:400}}>Age, Sex, Caste, Education</span></div>
+                {arrowRight("", '#6B7280')}
+                <div style={boxStyle('#10B981')}>Assign Risk Factors<br/><span style={{fontSize:'9px',fontWeight:400}}>SBP, BMI, Chol, eGFR, Tobacco</span></div>
+                {arrowRight("", '#6B7280')}
+                <div style={boxStyle('#EF4444')}>Assign Conditions<br/><span style={{fontSize:'9px',fontWeight:400}}>HT, DM, CKD, prior CVD</span></div>
+              </div>
+              {arrowDown("Validate against targets", '#10B981')}
+              <div style={boxStyle('#059669')}>Validated Synthetic Population<br/><span style={{fontSize:'9px',fontWeight:400}}>N = 500K–7.5L per district, calibrated to NFHS-5 prevalence targets</span></div>
+            </div>
+          )}
+          {sectionBox("Variables Generated Per Individual",
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:'8px', fontSize:'10px'}}>
+              <div style={{padding:'6px', backgroundColor:'#EFF6FF', borderRadius:'6px'}}>
+                <div style={{fontWeight:700, color:'#1E40AF'}}>Demographics</div>
+                <div>Age (30-69)</div><div>Sex (M/F)</div><div>Caste (SC/ST/OBC/Gen)</div><div>Education level</div><div>Urban/Rural</div>
+              </div>
+              <div style={{padding:'6px', backgroundColor:'#FEF3C7', borderRadius:'6px'}}>
+                <div style={{fontWeight:700, color:'#92400E'}}>Risk Factors</div>
+                <div>SBP (continuous)</div><div>BMI (continuous)</div><div>Total cholesterol</div><div>eGFR baseline</div><div>HbA1c level</div>
+              </div>
+              <div style={{padding:'6px', backgroundColor:'#FEE2E2', borderRadius:'6px'}}>
+                <div style={{fontWeight:700, color:'#991B1B'}}>Conditions</div>
+                <div>Hypertensive (Y/N)</div><div>Diabetic (Y/N)</div><div>Tobacco user (type)</div><div>Obese (Y/N)</div><div>Prior CVD event</div>
+              </div>
+              <div style={{padding:'6px', backgroundColor:'#F0FDF4', borderRadius:'6px'}}>
+                <div style={{fontWeight:700, color:'#166534'}}>Socioeconomic</div>
+                <div>Wealth quintile</div><div>Insurance (PMJAY)</div><div>Healthcare access</div><div>OOP spending capacity</div><div>District/State</div>
+              </div>
+            </div>
+          )}
+        </div>
+      )
+    }
+  };
+
+  const modelKeys = Object.keys(models);
+  const current = models[selectedModel];
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h2 className="text-base font-bold text-gray-800">Disease Models — Conceptual Architecture</h2>
+          <p className="text-xs text-gray-500 mt-0.5">These disease models form the analytical platform for NCD-India. Each will be built as a validated microsimulation module enabling future policy analyses.</p>
+        </div>
+      </div>
+
+      <div className="flex gap-2 mb-4 flex-wrap">
+        {modelKeys.map(k => (
+          <button key={k} onClick={() => setSelectedModel(k)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${selectedModel === k ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+            {models[k].title.replace(" Model", "").replace(" Framework", "").replace(" Analytical", "")}
+          </button>
+        ))}
+      </div>
+
+      <div style={{border:'1px solid #E2E8F0', borderRadius:'12px', padding:'20px', backgroundColor:'#FAFBFC'}}>
+        <h3 className="text-sm font-bold text-gray-800 mb-1">{current.title}</h3>
+        <p className="text-xs text-blue-600 font-medium mb-2">{current.subtitle}</p>
+        <p className="text-xs text-gray-600 mb-4 leading-relaxed">{current.description}</p>
+        {current.diagram()}
+      </div>
+
+      <div style={{marginTop:'16px', padding:'12px', backgroundColor:'#FFFBEB', borderRadius:'8px', border:'1px solid #FDE68A', fontSize:'11px', color:'#92400E'}}>
+        <b>Platform Vision:</b> Each disease model will be independently validated and then integrated into the unified NCD-India microsimulation engine.
+        The cross-disease interaction framework enables analysis of multi-NCD interventions (e.g., polypill for HT+DM, WHO Best Buys across all NCDs)
+        and captures synergistic effects that single-disease models miss. All models feed into the DCEA pipeline for equity-weighted policy recommendations.
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 
@@ -2032,6 +2448,7 @@ export default function NCDIndiaPlatform() {
     { id: "psa", label: "PSA", icon: "📈" },
     { id: "validation", label: "Validation", icon: "✓" },
     { id: "costs", label: "Costs", icon: "💰" },
+    { id: "models", label: "Disease Models", icon: "🧬" },
   ];
 
   return (
@@ -2133,6 +2550,7 @@ export default function NCDIndiaPlatform() {
             {tab === "psa" && <PSATab population={pop} intervention={curInt} years={years}/>}
             {tab === "validation" && <ValidationTab population={pop} years={years}/>}
             {tab === "costs" && <CostsTab population={pop} years={years} intervention={curInt} baseRes={baseRes} intRes={intRes}/>}
+            {tab === "models" && <DiseaseModelsTab/>}
           </div>
 
           <div className="mt-2 text-xs text-gray-400 text-center">
